@@ -2,11 +2,15 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 import {
   FormInputs,
   MAX_RESULTS,
-  MIN_RESULTS,
+  TARGET_RESULTS,
+  getCompetitionId,
+  getUserSearchTopics,
+  inferBestTopicForUser,
   inferFormatFromText,
-  inferTopicFromText,
   inferTopicsFromInputs,
+  locationMatchesUser,
   rankCompetitions,
+  scoreFormat,
   selectTopCompetitions,
   textMatchesKeyword,
 } from "../_shared/matching.ts";
@@ -83,19 +87,52 @@ function isCandidateUrl(url: string): boolean {
   }
 }
 
+async function searchBing(query: string): Promise<SearchResult[]> {
+  const url = `https://www.bing.com/search?q=${encodeURIComponent(query)}&count=20`;
+  const response = await fetch(url, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      Accept: "text/html,application/xhtml+xml",
+      "Accept-Language": "en-US,en;q=0.9",
+    },
+  });
+
+  if (!response.ok) return [];
+
+  const html = await response.text();
+  const results: SearchResult[] = [];
+
+  const patterns = [
+    /<li class="b_algo"[\s\S]*?<a href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<p[^>]*>([\s\S]*?)<\/p>/gi,
+    /<a href="(https?:\/\/[^"]+)"[^>]*><h2[^>]*>([\s\S]*?)<\/h2><\/a>[\s\S]*?<p[^>]*>([\s\S]*?)<\/p>/gi,
+  ];
+
+  for (const pattern of patterns) {
+    let match;
+    while ((match = pattern.exec(html)) !== null && results.length < 25) {
+      const rawUrl = match[1];
+      const title = match[2].replace(/<[^>]+>/g, "").trim();
+      const snippet = (match[3] ?? "").replace(/<[^>]+>/g, "").trim();
+      if (rawUrl.startsWith("http") && isCandidateUrl(rawUrl) && title.length > 3) {
+        results.push({ title, url: rawUrl, snippet });
+      }
+    }
+    if (results.length) break;
+  }
+
+  return results;
+}
+
 async function searchBrave(query: string, apiKey: string): Promise<SearchResult[]> {
   const url = new URL("https://api.search.brave.com/res/v1/web/search");
   url.searchParams.set("q", query);
-  url.searchParams.set("count", "15");
+  url.searchParams.set("count", "20");
 
   const response = await fetch(url.toString(), {
     headers: { Accept: "application/json", "X-Subscription-Token": apiKey },
   });
 
-  if (!response.ok) {
-    console.warn("Brave search failed:", response.status);
-    return [];
-  }
+  if (!response.ok) return [];
 
   const data = await response.json();
   const results = data?.web?.results ?? [];
@@ -107,31 +144,22 @@ async function searchBrave(query: string, apiKey: string): Promise<SearchResult[
 }
 
 async function searchDuckDuckGo(query: string): Promise<SearchResult[]> {
-  const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+  const url = `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(query)}`;
   const response = await fetch(url, {
-    headers: { "User-Agent": "CompCompAI/1.0 (competition discovery)" },
+    headers: { "User-Agent": "Mozilla/5.0 (compatible; CompCompAI/1.0)" },
   });
 
   if (!response.ok) return [];
 
   const html = await response.text();
   const results: SearchResult[] = [];
-  const resultPattern = /<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
-  const snippetPattern = /<a[^>]+class="result__snippet"[^>]*>([\s\S]*?)<\/a>/gi;
+  const linkPattern = /<a rel="nofollow" class="result-link" href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+  const snippetPattern = /<td class="result-snippet"[^>]*>([\s\S]*?)<\/td>/gi;
 
-  let match;
   const links: { url: string; title: string }[] = [];
-  while ((match = resultPattern.exec(html)) !== null) {
-    const rawUrl = match[1];
-    const title = match[2].replace(/<[^>]+>/g, "").trim();
-    let finalUrl = rawUrl;
-    if (rawUrl.includes("uddg=")) {
-      try {
-        const uddg = new URL(rawUrl, "https://duckduckgo.com").searchParams.get("uddg");
-        if (uddg) finalUrl = decodeURIComponent(uddg);
-      } catch { /* keep raw */ }
-    }
-    if (isCandidateUrl(finalUrl)) links.push({ url: finalUrl, title });
+  let match;
+  while ((match = linkPattern.exec(html)) !== null) {
+    links.push({ url: match[1], title: match[2].replace(/<[^>]+>/g, "").trim() });
   }
 
   const snippets: string[] = [];
@@ -139,145 +167,151 @@ async function searchDuckDuckGo(query: string): Promise<SearchResult[]> {
     snippets.push(match[1].replace(/<[^>]+>/g, "").trim());
   }
 
-  for (let i = 0; i < links.length && i < 15; i += 1) {
-    results.push({
-      title: links[i].title,
-      url: links[i].url,
-      snippet: snippets[i] ?? "",
-    });
+  for (let i = 0; i < links.length && i < 25; i += 1) {
+    if (isCandidateUrl(links[i].url)) {
+      results.push({ title: links[i].title, url: links[i].url, snippet: snippets[i] ?? "" });
+    }
   }
 
   return results;
 }
 
-function extractMetaContent(html: string, property: string): string {
-  const patterns = [
-    new RegExp(`<meta[^>]+property=["']${property}["'][^>]+content=["']([^"']+)["']`, "i"),
-    new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+property=["']${property}["']`, "i"),
-    new RegExp(`<meta[^>]+name=["']${property}["'][^>]+content=["']([^"']+)["']`, "i"),
-  ];
-  for (const pattern of patterns) {
-    const match = html.match(pattern);
-    if (match?.[1]) return match[1].trim();
+async function runWebSearch(query: string): Promise<SearchResult[]> {
+  const braveKey = Deno.env.get("BRAVE_SEARCH_API_KEY") ?? "";
+  if (braveKey) {
+    const braveResults = await searchBrave(query, braveKey);
+    if (braveResults.length) return braveResults;
   }
-  return "";
+
+  const bingResults = await searchBing(query);
+  if (bingResults.length) return bingResults;
+
+  return searchDuckDuckGo(query);
 }
 
-async function fetchPageMeta(url: string): Promise<{ title: string; description: string; image: string }> {
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000);
-    const response = await fetch(url, {
-      signal: controller.signal,
-      headers: { "User-Agent": "CompCompAI/1.0 (competition discovery)" },
-      redirect: "follow",
-    });
-    clearTimeout(timeout);
-
-    if (!response.ok) return { title: "", description: "", image: "" };
-
-    const html = await response.text();
-    const slice = html.slice(0, 50000);
-
-    const title =
-      extractMetaContent(slice, "og:title") ||
-      extractMetaContent(slice, "twitter:title") ||
-      (slice.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]?.replace(/<[^>]+>/g, "").trim() ?? "");
-
-    const description =
-      extractMetaContent(slice, "og:description") ||
-      extractMetaContent(slice, "twitter:description") ||
-      extractMetaContent(slice, "description");
-
-    let image =
-      extractMetaContent(slice, "og:image") ||
-      extractMetaContent(slice, "twitter:image");
-
-    if (image && image.startsWith("/")) {
-      try {
-        image = new URL(image, url).href;
-      } catch { /* ignore */ }
-    }
-
-    return { title, description, image };
-  } catch {
-    return { title: "", description: "", image: "" };
-  }
+function looksLikeCompetition(text: string): boolean {
+  const normalized = text.toLowerCase();
+  const signals = [
+    "competition", "contest", "olympiad", "challenge", "tournament", "fair",
+    "award", "prize", "scholarship", "talent search", "championship",
+  ];
+  return signals.some((s) => normalized.includes(s) || textMatchesKeyword(normalized, s));
 }
 
 function buildCompetitionFromSearchResult(
   result: SearchResult,
-  meta: { title: string; description: string; image: string },
   inputs: FormInputs,
-): Record<string, unknown> {
-  const combinedText = `${result.title} ${result.snippet} ${meta.title} ${meta.description}`;
-  const topic = inferTopicFromText(combinedText);
+  userTopics: string[],
+): Record<string, unknown> | null {
+  const combinedText = `${result.title} ${result.snippet}`;
+  const matchedTopic = inferBestTopicForUser(combinedText, userTopics);
+
+  if (!matchedTopic && userTopics.length > 0 && !userTopics.includes("Other")) {
+    return null;
+  }
+
+  const topic = matchedTopic ?? userTopics[0] ?? "Science";
   const format = inputs.format || inferFormatFromText(combinedText);
 
   return {
-    name: meta.title || result.title || "Competition",
-    details: meta.description || result.snippet || "Student competition found online.",
+    name: result.title || "Competition",
+    details: result.snippet || "Student competition found online.",
     link: result.url,
-    image: meta.image || "",
+    image: "",
     topic,
     format,
     location: inputs.location || "",
     grade: inputs.grade ? `Grades ${inputs.grade}` : "",
     age: inputs.age || "",
     source: "web",
+    _matchedTopics: [topic],
   };
-}
-
-function looksLikeCompetition(text: string): boolean {
-  const normalized = text.toLowerCase();
-  const signals = ["competition", "contest", "olympiad", "challenge", "tournament", "fair", "award", "prize"];
-  return signals.some((s) => normalized.includes(s) || textMatchesKeyword(normalized, s));
 }
 
 async function discoverFromWeb(
   supabase: ReturnType<typeof createClient>,
   inputs: FormInputs,
-  topics: string[],
+  userTopics: string[],
   existingLinks: Set<string>,
-  needed: number,
-): Promise<Record<string, unknown>[]> {
-  const query = buildSearchQuery(inputs, topics);
-  const braveKey = Deno.env.get("BRAVE_SEARCH_API_KEY") ?? "";
-  const searchResults = braveKey
-    ? await searchBrave(query, braveKey)
-    : await searchDuckDuckGo(query);
+  maxCount: number,
+): Promise<{ imported: Record<string, unknown>[]; searchHits: number; errors: string[] }> {
+  const queries = [
+    buildSearchQuery(inputs, userTopics),
+    `${userTopics.join(" ")} student competition ${inputs.location}`.trim(),
+    `${userTopics.join(" ")} high school contest ${inputs.grade ? `grade ${inputs.grade}` : ""}`.trim(),
+    `youth ${userTopics[0] ?? "STEM"} olympiad competition`,
+  ];
+  const uniqueQueries = [...new Set(queries.filter(Boolean))];
+  const errors: string[] = [];
+
+  const allSearchResults: SearchResult[] = [];
+  const seenUrls = new Set<string>();
+
+  for (const query of uniqueQueries) {
+    try {
+      const batch = await runWebSearch(query);
+      for (const result of batch) {
+        if (!seenUrls.has(result.url)) {
+          seenUrls.add(result.url);
+          allSearchResults.push(result);
+        }
+      }
+    } catch (error) {
+      errors.push(String(error));
+    }
+    if (allSearchResults.length >= 50) break;
+  }
 
   const imported: Record<string, unknown>[] = [];
 
-  for (const result of searchResults) {
-    if (imported.length >= needed) break;
+  for (const result of allSearchResults) {
+    if (imported.length >= maxCount) break;
     if (existingLinks.has(result.url)) continue;
 
     const combined = `${result.title} ${result.snippet}`;
     if (!looksLikeCompetition(combined)) continue;
 
-    const meta = await fetchPageMeta(result.url);
-    const competition = buildCompetitionFromSearchResult(result, meta, inputs);
+    const competition = buildCompetitionFromSearchResult(result, inputs, userTopics);
+    if (!competition) continue;
 
-    const { error } = await supabase
-      .from("competitions")
-      .upsert(competition, { onConflict: "link", ignoreDuplicates: true });
+    if (inputs.format && scoreFormat(competition, inputs.format) === 0) continue;
+    if (inputs.location && !locationMatchesUser(competition, inputs.location, inputs.format)) continue;
 
-    if (error) {
-      const { error: insertError } = await supabase.from("competitions").insert(competition);
-      if (insertError) {
-        console.warn("Insert failed:", insertError.message);
-        imported.push(competition);
-        existingLinks.add(result.url);
-        continue;
-      }
+    const { error } = await supabase.from("competitions").insert(competition);
+    if (error && !String(error.message).toLowerCase().includes("duplicate")) {
+      errors.push(error.message);
     }
 
     imported.push(competition);
     existingLinks.add(result.url);
   }
 
-  return imported;
+  return { imported, searchHits: allSearchResults.length, errors };
+}
+
+function mergeWebFirstThenDb(
+  webResults: Record<string, unknown>[],
+  dbResults: Record<string, unknown>[],
+): Record<string, unknown>[] {
+  const merged: Record<string, unknown>[] = [];
+  const seen = new Set<string>();
+
+  for (const comp of webResults) {
+    const id = getCompetitionId(comp);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    merged.push(comp);
+  }
+
+  for (const comp of dbResults) {
+    if (merged.length >= TARGET_RESULTS) break;
+    const id = getCompetitionId(comp);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    merged.push(comp);
+  }
+
+  return merged.slice(0, MAX_RESULTS);
 }
 
 Deno.serve(async (req) => {
@@ -310,6 +344,7 @@ Deno.serve(async (req) => {
 
     const supabase = createClient(supabaseUrl, serviceKey);
     const { topics, inferredTopics } = inferTopicsFromInputs(inputs);
+    const userTopics = getUserSearchTopics(inputs);
 
     const { data: allCompetitions, error: fetchError } = await supabase
       .from("competitions")
@@ -319,36 +354,26 @@ Deno.serve(async (req) => {
       return jsonResponse({ error: fetchError.message }, 500);
     }
 
-    let scored = rankCompetitions(allCompetitions ?? [], inputs);
-    let competitions = selectTopCompetitions(scored);
-    let webSearchUsed = false;
+    const existingLinks = new Set(
+      (allCompetitions ?? []).map((c) => String(c.link ?? "").trim()).filter(Boolean),
+    );
 
-    if (competitions.length < MIN_RESULTS) {
-      webSearchUsed = true;
-      const existingLinks = new Set(
-        (allCompetitions ?? [])
-          .map((c) => String(c.link ?? "").trim())
-          .filter(Boolean),
-      );
+    // STEP 1: Web search FIRST (always)
+    const { imported: webResults, searchHits, errors: webErrors } = await discoverFromWeb(
+      supabase,
+      inputs,
+      userTopics,
+      existingLinks,
+      TARGET_RESULTS,
+    );
 
-      const needed = MIN_RESULTS - competitions.length;
-      const imported = await discoverFromWeb(
-        supabase,
-        inputs,
-        topics,
-        existingLinks,
-        Math.max(needed, MIN_RESULTS),
-      );
+    // STEP 2: Database matches (strict topic filter)
+    const dbResults = selectTopCompetitions(rankCompetitions(allCompetitions ?? [], inputs));
 
-      if (imported.length) {
-        const merged = [...(allCompetitions ?? []), ...imported];
-        scored = rankCompetitions(merged, inputs);
-        competitions = selectTopCompetitions(scored);
-      }
-    }
+    // STEP 3: Merge — web results appear first, DB fills the rest
+    const competitions = mergeWebFirstThenDb(webResults, dbResults);
 
-    competitions = competitions.slice(0, MAX_RESULTS);
-
+    const webCount = competitions.filter((c) => c.source === "web").length;
     const displayTopics = inputs.selectedTopics.filter((t) => t !== "Other").length
       ? inputs.selectedTopics.filter((t) => t !== "Other")
       : topics;
@@ -356,21 +381,23 @@ Deno.serve(async (req) => {
     const bannerParts: string[] = [];
 
     if (competitions.length) {
-      bannerParts.push(`Showing ${competitions.length} competition${competitions.length === 1 ? "" : "s"} for: ${displayTopics.join(", ") || "your interests"}.`);
+      bannerParts.push(`Showing ${competitions.length} competition${competitions.length === 1 ? "" : "s"}.`);
+    }
+
+    if (webCount > 0) {
+      bannerParts.push(`${webCount} found online (shown first).`);
+    } else if (searchHits === 0) {
+      bannerParts.push("Web search returned no results — add BRAVE_SEARCH_API_KEY in Supabase for better search.");
+    } else {
+      bannerParts.push("Web search ran but no new online matches passed filters.");
     }
 
     if (inferredTopics.length) {
       bannerParts.push(`Inferred from your interests: ${inferredTopics.join(", ")}.`);
     }
 
-    if (webSearchUsed && competitions.length >= MIN_RESULTS) {
-      bannerParts.push("Some results were found online and added to our database.");
-    }
-
-    if (competitions.length < MIN_RESULTS) {
-      bannerParts.push(
-        `Only ${competitions.length} matching competition${competitions.length === 1 ? "" : "s"} found. Try broadening your topics or location.`,
-      );
+    if (competitions.length < TARGET_RESULTS) {
+      bannerParts.push(`Only ${competitions.length} total matches — try broadening location or topics.`);
     }
 
     return jsonResponse({
@@ -378,11 +405,14 @@ Deno.serve(async (req) => {
       topics: displayTopics,
       inferredTopics,
       hasExactMatches: competitions.length > 0,
-      webSearchUsed,
+      webSearchUsed: true,
+      webImportCount: webCount,
+      webSearchHits: searchHits,
+      webErrors,
       banner: bannerParts.join(" "),
       sourceCounts: {
         database: competitions.filter((c) => (c.source ?? "manual") !== "web").length,
-        web: competitions.filter((c) => c.source === "web").length,
+        web: webCount,
       },
     });
   } catch (error) {

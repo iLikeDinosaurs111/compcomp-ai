@@ -1,38 +1,77 @@
 /* Shared competition matching logic (browser fallback when Edge Function unavailable). */
 const DiscoveryMatching = (() => {
-  const MIN_RESULTS = 3;
+  const TARGET_RESULTS = 10;
   const MAX_RESULTS = 10;
 
   const INTEREST_TOPICS = {
     Science: [
-      "science", "sciences", "sciene", "scince", "biology", "chemistry", "physics",
-      "lab", "laboratory", "experiment", "research", "nature", "environment",
-      "science fair", "scientist", "medicine", "anatomy", "ecology", "astronomy", "space",
+      "science", "sciences", "biology", "chemistry", "physics", "lab", "laboratory",
+      "experiment", "research", "nature", "environment", "science fair", "scientist",
+      "medicine", "anatomy", "ecology", "astronomy", "space",
     ],
     Technology: [
-      "technology", "technolgy", "tech", "coding", "code", "programming", "programing",
-      "computer", "computers", "robotics", "robot", "software", "engineering", "engineer",
-      "hackathon", "developer", "apps", "ai", "artificial intelligence", "building apps",
-      "machine learning", "electronics", "hardware", "esports", "chess",
+      "technology", "tech", "coding", "programming", "computer", "computers", "robotics",
+      "robot", "software", "engineering", "engineer", "hackathon", "developer", "apps",
+      "artificial intelligence", "machine learning", "electronics", "hardware", "esports",
     ],
     Mathematics: [
-      "mathematics", "mathematic", "math", "maths", "number", "numbers", "numerical",
-      "calculus", "algebra", "geometry", "statistics", "working with numbers",
-      "problem solving", "logic", "data", "equations", "counting", "quantitative",
-      "actuary", "proofs", "finance", "financial", "investing", "investment", "stocks",
-      "stock market", "accounting", "budgeting", "economics", "economy",
+      "mathematics", "math", "maths", "calculus", "algebra", "geometry", "statistics",
+      "quantitative", "actuary", "proofs", "finance", "financial", "investing",
+      "stock market", "accounting", "budgeting", "economics", "olympiad",
     ],
     Arts: [
-      "arts", "art", "music", "musical", "drawing", "paint", "painting", "creative",
-      "creativity", "design", "theater", "theatre", "drama", "writing", "poetry", "film",
-      "visual", "performing", "photography", "dance", "singing", "storytelling",
+      "arts", "art", "music", "musical", "drawing", "painting", "creative", "design",
+      "theater", "theatre", "drama", "writing", "poetry", "poem", "recitation", "out loud",
+      "film", "visual", "performing", "photography", "dance", "singing", "storytelling",
       "debate", "public speaking", "speech",
     ],
     Finance: [
       "finance", "financial", "investing", "investment", "stocks", "stock market",
-      "accounting", "budgeting", "economics", "economy", "trading", "portfolio",
+      "accounting", "budgeting", "economics", "trading", "portfolio",
     ],
   };
+
+  const TOPIC_FIELD_ALIASES = {
+    science: "Science", sciences: "Science", technology: "Technology", tech: "Technology",
+    mathematics: "Mathematics", math: "Mathematics", maths: "Mathematics",
+    arts: "Arts", art: "Arts", music: "Arts", poetry: "Arts", drama: "Arts",
+    finance: "Finance", financial: "Finance", economics: "Finance", stem: "Science",
+  };
+
+  const TOPIC_NEGATIVE_KEYWORDS = {
+    Mathematics: [
+      "poetry", "poem", "recitation", "out loud", "spoken word", "music", "drama",
+      "theater", "theatre", "dance", "art competition", "writing competition",
+      "scholastic art", " art ", "writing awards", "creative writing", "history day",
+      "debate", "literature", "humanities", "business", "marketing", "entrepreneurship",
+      "deca", "career development", "computing olympiad", "usaco", "programming contest",
+      "coding competition", "biology", "chemistry",
+    ],
+    Science: ["poetry", "poem", "music", "debate", "history day", "art competition"],
+    Technology: ["poetry", "poem", "music", "dance", "history day"],
+    Arts: ["calculus", "algebra", "geometry", "olympiad", "hackathon", "robotics", "programming"],
+    Finance: ["poetry", "poem", "music", "dance", "science fair", "biology"],
+  };
+
+  function getCanonicalTopicFromField(competition) {
+    const topicField = normalizeInterestText(
+      getCompetitionField(competition, ["topic", "topics", "subject", "category"]),
+    );
+    if (!topicField) return null;
+    if (TOPIC_FIELD_ALIASES[topicField]) return TOPIC_FIELD_ALIASES[topicField];
+    for (const [alias, canonical] of Object.entries(TOPIC_FIELD_ALIASES)) {
+      if (topicField.includes(alias)) return canonical;
+    }
+    for (const canonical of ["Science", "Technology", "Mathematics", "Arts", "Finance"]) {
+      if (textMatchesKeyword(topicField, canonical)) return canonical;
+    }
+    return null;
+  }
+
+  function topicConflictsWithNegativeSignals(topic, searchText) {
+    const negatives = TOPIC_NEGATIVE_KEYWORDS[topic] ?? [];
+    return negatives.some((phrase) => searchText.includes(normalizeInterestText(phrase)));
+  }
 
   const OTHER_INFERENCE_MAP = [
     { phrases: ["counting", "numbers", "budgeting", "math", "algebra", "calculus"], topics: ["Mathematics"] },
@@ -156,14 +195,22 @@ const DiscoveryMatching = (() => {
 
   function competitionMatchesTopic(competition, topic, otherText = "") {
     if (topic === "Other") return competitionMatchesOtherText(competition, otherText);
+
     const searchText = getCompetitionSearchText(competition);
+    if (topicConflictsWithNegativeSignals(topic, searchText)) return false;
+
+    const canonicalField = getCanonicalTopicFromField(competition);
+
+    if (canonicalField) {
+      if (topic === "Finance") return canonicalField === "Finance" || canonicalField === "Mathematics";
+      return canonicalField === topic;
+    }
+
     const keywords = INTEREST_TOPICS[topic] ?? [];
-    const topicField = getCompetitionField(competition, ["topic", "topics", "subject", "category"]);
-    if (topicField && textMatchesKeyword(topicField, topic)) return true;
-    return (
-      textMatchesKeyword(searchText, topic) ||
-      keywords.some((keyword) => textMatchesKeyword(searchText, keyword))
-    );
+    const strongHit = keywords.some((keyword) => keyword.length >= 4 && textMatchesKeyword(searchText, keyword));
+    if (strongHit) return true;
+
+    return textMatchesKeyword(searchText, topic);
   }
 
   function normalizeLocation(text) {
@@ -172,6 +219,71 @@ const DiscoveryMatching = (() => {
       normalized = normalized.replace(new RegExp(`\\b${name}\\b`, "g"), abbrev);
     }
     return normalized;
+  }
+
+  const NATIONAL_LOCATION_SIGNALS = [
+    "national", "nationwide", "international", "global", "virtual", "online", "remote",
+    "anywhere", "all states", "multi state", "multistate",
+  ];
+
+  function extractStates(text) {
+    const normalized = normalizeLocation(text);
+    const states = new Set();
+    for (const [name, abbrev] of Object.entries(US_STATE_ABBREVS)) {
+      if (new RegExp(`\\b${name}\\b`).test(normalized) || new RegExp(`\\b${abbrev}\\b`).test(normalized)) {
+        states.add(abbrev);
+      }
+    }
+    return [...states];
+  }
+
+  function isOnlineOrNationalCompetition(competition, searchText) {
+    const compFormat = getCompetitionField(competition, ["format", "delivery", "mode", "type"]).toLowerCase();
+    const compLoc = getCompetitionField(competition, ["location", "city", "region", "state", "address", "town"]).toLowerCase();
+    const combined = `${searchText} ${compLoc} ${compFormat}`;
+    if (compFormat.includes("online") || compFormat.includes("virtual") || compFormat.includes("remote")) {
+      return true;
+    }
+    return NATIONAL_LOCATION_SIGNALS.some((signal) => combined.includes(signal));
+  }
+
+  function locationMatchesUser(competition, userLocation, userFormat = "") {
+    if (!userLocation.trim()) return true;
+
+    const compLoc = getCompetitionField(competition, ["location", "city", "region", "state", "address", "town"]);
+    const searchText = getCompetitionSearchText(competition);
+    const onlineNational = isOnlineOrNationalCompetition(competition, searchText);
+    const userWantsOnline = userFormat === "online";
+    const userWantsInPerson = userFormat === "in-person";
+
+    if (onlineNational && userWantsOnline) return true;
+    if (onlineNational && !userWantsInPerson && !compLoc) return true;
+    if (!compLoc) return false;
+
+    const userStates = extractStates(userLocation);
+    const compStates = extractStates(compLoc);
+    if (userStates.length && compStates.length && !userStates.some((s) => compStates.includes(s))) {
+      return false;
+    }
+
+    const userNorm = normalizeLocation(userLocation);
+    const locNorm = normalizeLocation(compLoc);
+    if (locNorm.includes(userNorm) || userNorm.includes(locNorm)) return true;
+
+    const userTokens = userNorm.split(" ").filter((t) => t.length >= 2 && !Object.values(US_STATE_ABBREVS).includes(t));
+    const locTokens = locNorm.split(" ").filter((t) => t.length >= 2 && !Object.values(US_STATE_ABBREVS).includes(t));
+    for (const ut of userTokens) {
+      if (ut.length < 3) continue;
+      for (const lt of locTokens) {
+        if (lt.length < 3) continue;
+        if (ut === lt || levenshtein(ut, lt) <= 1) return true;
+      }
+    }
+
+    if (userStates.length && compStates.length && userStates.some((s) => compStates.includes(s))) {
+      return userTokens.length === 0;
+    }
+    return false;
   }
 
   function parseAgeNumber(value) {
@@ -248,21 +360,25 @@ const DiscoveryMatching = (() => {
     return 0;
   }
 
-  function scoreLocation(competition, userLocation) {
+  function scoreLocation(competition, userLocation, userFormat = "") {
     if (!userLocation) return 1;
+    if (!locationMatchesUser(competition, userLocation, userFormat)) return 0;
     const userNorm = normalizeLocation(userLocation);
     const locText = normalizeLocation(getCompetitionField(competition, ["location", "city", "region", "state", "address", "town"]));
-    if (!locText) return 0.7;
+    if (!locText) return 0.6;
     if (locText.includes(userNorm) || userNorm.includes(locText)) return 1;
     const userTokens = userNorm.split(" ").filter((t) => t.length >= 3);
     const locTokens = locText.split(" ").filter((t) => t.length >= 3);
     for (const ut of userTokens) {
       for (const lt of locTokens) {
         if (ut === lt) return 1;
-        if (ut.length >= 3 && lt.length >= 3 && levenshtein(ut, lt) <= 2) return 0.8;
+        if (ut.length >= 3 && lt.length >= 3 && levenshtein(ut, lt) <= 1) return 0.9;
       }
     }
-    return 0.2;
+    const userStates = extractStates(userLocation);
+    const compStates = extractStates(locText);
+    if (userStates.length && compStates.some((s) => userStates.includes(s))) return 0.75;
+    return 0;
   }
 
   function scoreFormat(competition, format) {
@@ -314,9 +430,13 @@ const DiscoveryMatching = (() => {
     const formatScore = scoreFormat(competition, inputs.format);
     if (inputs.format && formatScore === 0) return null;
 
+    if (inputs.location && !locationMatchesUser(competition, inputs.location, inputs.format)) {
+      return null;
+    }
+
     const ageScore = scoreAge(competition, inputs.age);
     const gradeScore = scoreGrade(competition, inputs.grade);
-    const locationScore = scoreLocation(competition, inputs.location);
+    const locationScore = scoreLocation(competition, inputs.location, inputs.format);
 
     let profileWeight = 0;
     let profileSum = 0;
@@ -336,21 +456,23 @@ const DiscoveryMatching = (() => {
       (topicScore > 0 ? 0.1 : 0);
 
     if (score <= 0) return null;
+    if (!matchedTopics.length) return null;
 
     return {
-      competition: {
-        ...competition,
-        _matchedTopics: matchedTopics.length ? matchedTopics : effectiveTopics.slice(0, 1),
-      },
+      competition: { ...competition, _matchedTopics: matchedTopics },
       score,
     };
   }
 
+  function getUserSearchTopics(inputs) {
+    const selected = inputs.selectedTopics.filter((t) => t !== "Other");
+    if (selected.length) return selected;
+    return inferTopicsFromInputs(inputs).topics;
+  }
+
   function rankCompetitions(competitions, inputs) {
-    const { topics } = inferTopicsFromInputs(inputs);
-    const searchTopics = inputs.selectedTopics.includes("Other") && topics.length === 0
-      ? ["Other"]
-      : [...topics, ...(inputs.selectedTopics.includes("Other") ? ["Other"] : [])];
+    const userTopics = getUserSearchTopics(inputs);
+    const searchTopics = inputs.selectedTopics.includes("Other") ? [...userTopics, "Other"] : userTopics;
     const uniqueTopics = [...new Set(searchTopics)];
     const scored = [];
     const seen = new Set();
@@ -385,9 +507,9 @@ const DiscoveryMatching = (() => {
     if (inferredTopics.length) {
       bannerParts.push(`Inferred from your interests: ${inferredTopics.join(", ")}.`);
     }
-    if (matched.length < MIN_RESULTS) {
+    if (matched.length < TARGET_RESULTS) {
       bannerParts.push(
-        `Only ${matched.length} match${matched.length === 1 ? "" : "es"} found locally. Deploy the Edge Function for web search fallback.`,
+        `Found ${matched.length} match${matched.length === 1 ? "" : "es"} for your area and topics. Deploy the Edge Function for web search to fill up to ${TARGET_RESULTS}.`,
       );
     }
 
@@ -402,7 +524,7 @@ const DiscoveryMatching = (() => {
   }
 
   return {
-    MIN_RESULTS,
+    TARGET_RESULTS,
     MAX_RESULTS,
     inferTopicsFromInputs,
     rankCompetitions,

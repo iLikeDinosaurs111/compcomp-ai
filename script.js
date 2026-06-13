@@ -808,6 +808,18 @@ function formatFormatLabel(format) {
   return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
+function getDisplayTopic(competition) {
+  const topicField = getCompetitionField(competition, [
+    "topic",
+    "topics",
+    "subject",
+    "category",
+  ]);
+  if (topicField) return topicField;
+  const matched = competition._matchedTopics ?? [];
+  return matched[0] ?? "";
+}
+
 function renderCompetitionCard(competition) {
   const name = getCompetitionField(competition, [
     "name",
@@ -832,7 +844,7 @@ function renderCompetitionCard(competition) {
     "grade_range",
   ]);
   const format = getCompetitionField(competition, ["format", "delivery", "mode"]);
-  const matchedTopics = competition._matchedTopics ?? [];
+  const displayTopic = getDisplayTopic(competition);
   const source = getCompetitionField(competition, ["source"]);
   const isWebSource = source === "web";
 
@@ -842,12 +854,7 @@ function renderCompetitionCard(competition) {
       <header class="comp-card__header">${escapeHtml(name || "Competition")}</header>
       <div class="comp-card__meta">
         ${isWebSource ? `<span class="comp-card__tag comp-card__tag--source">Found online</span>` : ""}
-        ${matchedTopics
-          .map(
-            (topic) =>
-              `<span class="comp-card__tag comp-card__tag--topic">${escapeHtml(topic)}</span>`
-          )
-          .join("")}
+        ${displayTopic ? `<span class="comp-card__tag comp-card__tag--topic">${escapeHtml(displayTopic)}</span>` : ""}
         ${grade ? `<span class="comp-card__tag comp-card__tag--grade">${escapeHtml(formatGradeLabel(grade))}</span>` : ""}
         ${format ? `<span class="comp-card__tag comp-card__tag--format">${escapeHtml(formatFormatLabel(format))}</span>` : ""}
         ${location ? `<span class="comp-card__tag comp-card__tag--location">${escapeHtml(location)}</span>` : ""}
