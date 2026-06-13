@@ -13,6 +13,7 @@ import {
   rankCompetitions,
   selectTopCompetitions,
   textMatchesKeyword,
+  dedupeCompetitionRows,
 } from "../_shared/matching.ts";
 import {
   inferTimeLabel,
@@ -552,7 +553,12 @@ async function discoverFromWeb(
     }
 
     const goodCount = allSearchResults.filter(isOfficialCompetitionResult).length;
-    if (goodCount >= MAX_WEB_PERSIST || goodCount >= maxDisplay) break;
+    const newUrlCount = allSearchResults.filter(
+      (result) => !existingAtStart.has(normalizeCompetitionLink(result.url)),
+    ).length;
+
+    if (goodCount >= MAX_WEB_PERSIST || newUrlCount >= maxDisplay) break;
+    if (serperQueries >= 1 && newUrlCount === 0 && allSearchResults.length > 0) break;
   }
 
   let rankedResults = [...allSearchResults]
@@ -633,25 +639,70 @@ async function discoverFromWeb(
   };
 }
 
-function calculateNeedFromWeb(
-  dbResults: Record<string, unknown>[],
-  rankedDbCount: number,
-): number {
-  const gap = Math.max(0, TARGET_RESULTS - dbResults.length);
-  if (gap <= 0) return 0;
+function fillFromDatabase(
+  eligibleDb: Record<string, unknown>[],
+  inputs: FormInputs,
+): Record<string, unknown>[] {
+  const strictRanked = selectTopCompetitions(rankCompetitions(eligibleDb, inputs, "strict"));
+  const strictIds = new Set(strictRanked.map((comp) => getCompetitionId(comp)));
+  const combined: Record<string, unknown>[] = [];
 
-  const exhaustedDb = rankedDbCount <= dbResults.length;
-  const hasCachedWeb = dbResults.some((comp) => String(comp.source ?? "") === "web");
-
-  if (exhaustedDb && dbResults.length > 0 && hasCachedWeb) {
-    return 0;
+  for (const comp of strictRanked.slice(0, TARGET_RESULTS)) {
+    combined.push({
+      ...comp,
+      _fromDatabase: true,
+      _isNewWeb: false,
+      _isAlternative: false,
+    });
   }
 
-  if (exhaustedDb && dbResults.length > 0 && !hasCachedWeb) {
-    return gap;
+  if (combined.length < TARGET_RESULTS) {
+    const relaxedRanked = selectTopCompetitions(rankCompetitions(eligibleDb, inputs, "relaxed"));
+    for (const comp of relaxedRanked) {
+      if (combined.length >= TARGET_RESULTS) break;
+      const id = getCompetitionId(comp);
+      if (strictIds.has(id)) continue;
+      if (combined.some((existing) => getCompetitionId(existing) === id)) continue;
+      combined.push({
+        ...comp,
+        _fromDatabase: true,
+        _isNewWeb: false,
+        _isAlternative: true,
+      });
+    }
   }
 
-  return gap;
+  if (combined.length === 0) {
+    const fallbackRanked = selectTopCompetitions(rankCompetitions(eligibleDb, inputs, "fallback"));
+    for (const comp of fallbackRanked.slice(0, TARGET_RESULTS)) {
+      combined.push({
+        ...comp,
+        _fromDatabase: true,
+        _isNewWeb: false,
+        _isAlternative: true,
+      });
+    }
+  }
+
+  return combined.slice(0, MAX_RESULTS);
+}
+
+function shouldRunWebSearch(
+  combinedDb: Record<string, unknown>[],
+  eligibleDb: Record<string, unknown>[],
+  inputs: FormInputs,
+): boolean {
+  const gap = Math.max(0, TARGET_RESULTS - combinedDb.length);
+  if (gap <= 0) return false;
+
+  const seen = new Set(combinedDb.map((comp) => getCompetitionId(comp)));
+  const relaxedRanked = selectTopCompetitions(rankCompetitions(eligibleDb, inputs, "relaxed"));
+  const remainingRelaxed = relaxedRanked.filter((comp) => !seen.has(getCompetitionId(comp)));
+
+  if (remainingRelaxed.length >= gap) return false;
+  if (eligibleDb.length >= DB_PREFERRED_COUNT) return false;
+
+  return true;
 }
 
 function mergeDbPriority(
@@ -720,7 +771,7 @@ Deno.serve(async (req) => {
     const { topics, inferredTopics } = inferTopicsFromInputs(inputs);
     const userTopics = getUserSearchTopics(inputs);
 
-    const { data: allCompetitions, error: fetchError } = await supabase
+    const { data: rawCompetitions, error: fetchError } = await supabase
       .from("competitions")
       .select("*");
 
@@ -728,21 +779,24 @@ Deno.serve(async (req) => {
       return jsonResponse({ error: fetchError.message }, 500);
     }
 
+    const allCompetitions = dedupeCompetitionRows(rawCompetitions ?? []);
+
     const existingLinks = new Set(
-      (allCompetitions ?? [])
+      allCompetitions
         .map((c) => normalizeCompetitionLink(String(c.link ?? "").trim()))
         .filter(Boolean),
     );
 
-    // STEP 1: Database first (manual + cached web), upcoming only
-    const eligibleDb = (allCompetitions ?? []).filter(
+    // STEP 1: Database first — strict, then relaxed/fallback alternatives
+    const eligibleDb = allCompetitions.filter(
       (c) => !isRejectedResult(competitionRecordToSearchResult(c)) && isCompetitionUpcoming(c),
     );
-    const rankedDb = selectTopCompetitions(rankCompetitions(eligibleDb, inputs));
-    const dbResults = rankedDb.slice(0, TARGET_RESULTS);
-    const needFromWeb = calculateNeedFromWeb(dbResults, rankedDb.length);
+    let combinedDb = fillFromDatabase(eligibleDb, inputs);
+    const strictCount = combinedDb.filter((c) => !c._isAlternative).length;
+    const alternativeCount = combinedDb.filter((c) => c._isAlternative).length;
+    const needFromWeb = Math.max(0, TARGET_RESULTS - combinedDb.length);
 
-    // STEP 2: Serper only when DB cannot fill gaps with new discoveries
+    // STEP 2: Serper only when DB cannot fill gaps with anything new
     let webResults: Record<string, unknown>[] = [];
     let searchHits = 0;
     let serperQueries = 0;
@@ -750,7 +804,7 @@ Deno.serve(async (req) => {
     let webErrors: string[] = [];
     let webSearchUsed = false;
 
-    if (needFromWeb > 0) {
+    if (needFromWeb > 0 && shouldRunWebSearch(combinedDb, eligibleDb, inputs)) {
       webSearchUsed = true;
       const webDiscovery = await discoverFromWeb(
         supabase,
@@ -766,13 +820,16 @@ Deno.serve(async (req) => {
       webErrors = webDiscovery.errors;
     }
 
-    // STEP 3: DB first, genuinely new web results fill remaining slots
-    const competitions = mergeDbPriority(dbResults, webResults).filter(
+    // STEP 3: Merge new web finds into DB results (deduped)
+    const competitions = mergeDbPriority(combinedDb, webResults).filter(
       (comp) => !isRejectedCompetitionRecord(comp),
     );
 
     const dbCount = competitions.filter((c) => c._fromDatabase === true).length;
     const webCount = competitions.filter((c) => c._isNewWeb === true).length;
+    const isAlternativeResults = alternativeCount > 0 && strictCount === 0
+      ? true
+      : competitions.some((c) => c._isAlternative === true);
     const displayTopics = inputs.selectedTopics.filter((t) => t !== "Other").length
       ? inputs.selectedTopics.filter((t) => t !== "Other")
       : topics;
@@ -783,18 +840,24 @@ Deno.serve(async (req) => {
       bannerParts.push(`Showing ${competitions.length} competition${competitions.length === 1 ? "" : "s"}.`);
     }
 
+    if (isAlternativeResults && strictCount === 0) {
+      bannerParts.push("No exact profile match — showing similar upcoming alternatives from our database.");
+    } else if (isAlternativeResults) {
+      bannerParts.push(`${alternativeCount} similar alternative${alternativeCount === 1 ? "" : "s"} included.`);
+    }
+
     if (!webSearchUsed && dbCount >= DB_PREFERRED_COUNT) {
-      bannerParts.push(`${dbCount} from our database — no web search needed (Serper credits saved).`);
-    } else if (!webSearchUsed) {
-      bannerParts.push(`${dbCount} from our database.`);
-    } else if (newWebCount > 0) {
+      bannerParts.push(`All from our database — no web search needed (Serper credits saved).`);
+    } else if (!webSearchUsed && dbCount > 0) {
+      bannerParts.push(`All ${dbCount} from our database.`);
+    } else if (webSearchUsed && newWebCount > 0) {
       bannerParts.push(
         `${dbCount} from database, ${newWebCount} newly discovered online (${serperQueries} Serper ${serperQueries === 1 ? "query" : "queries"}). Saved for next time.`,
       );
-    } else if (searchHits === 0) {
-      bannerParts.push(`${dbCount} from database. Web search returned no results — add SERPER_API_KEY in Supabase Edge Function secrets.`);
-    } else {
-      bannerParts.push(`${dbCount} from database — web search ran but everything found was already saved.`);
+    } else if (webSearchUsed && searchHits === 0) {
+      bannerParts.push(`All ${dbCount} from database. Web search returned no results.`);
+    } else if (webSearchUsed) {
+      bannerParts.push(`All ${dbCount} from database — skipped extra web search (already saved).`);
     }
 
     if (inferredTopics.length) {
@@ -814,6 +877,7 @@ Deno.serve(async (req) => {
       topics: displayTopics,
       inferredTopics,
       hasExactMatches: competitions.length > 0,
+      isAlternativeResults,
       webSearchUsed,
       webImportCount: newWebCount,
       newWebCount,

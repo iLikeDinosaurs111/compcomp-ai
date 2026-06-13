@@ -865,6 +865,7 @@ function renderCompetitionCard(competition) {
   const displayTopic = getDisplayTopic(competition);
   const source = getCompetitionField(competition, ["source"]);
   const isNewWebResult = competition._isNewWeb === true;
+  const isAlternative = competition._isAlternative === true;
 
   return `
     <article class="comp-card${isNewWebResult ? " comp-card--web" : ""}">
@@ -872,6 +873,7 @@ function renderCompetitionCard(competition) {
       <header class="comp-card__header">${escapeHtml(name || "Competition")}</header>
       <div class="comp-card__meta">
         ${isNewWebResult ? `<span class="comp-card__tag comp-card__tag--source">Found online</span>` : ""}
+        ${isAlternative ? `<span class="comp-card__tag comp-card__tag--alt">Similar match</span>` : ""}
         ${displayTopic ? `<span class="comp-card__tag comp-card__tag--topic">${escapeHtml(displayTopic)}</span>` : ""}
         ${grade ? `<span class="comp-card__tag comp-card__tag--grade">${escapeHtml(formatGradeLabel(grade))}</span>` : ""}
         ${format ? `<span class="comp-card__tag comp-card__tag--format">${escapeHtml(formatFormatLabel(format))}</span>` : ""}
@@ -1019,6 +1021,7 @@ form.addEventListener("submit", async (event) => {
       competitions: matchedCompetitions,
       topics = inputs.selectedTopics.filter((t) => t !== "Other"),
       hasExactMatches = matchedCompetitions.length > 0,
+      isAlternativeResults = false,
       banner = "",
       inferredTopics = [],
     } = discovery;
@@ -1046,7 +1049,10 @@ form.addEventListener("submit", async (event) => {
       resultsBanner.textContent = bannerMessages.join(" ");
     }
 
-    renderCompetitions(matchedCompetitions, topics, { hasExactMatches });
+    renderCompetitions(matchedCompetitions, topics, {
+      hasExactMatches: matchedCompetitions.length > 0,
+      isAlternativeResults,
+    });
   } catch (error) {
     if (submitRequestId !== activeSubmitRequestId) {
       return;

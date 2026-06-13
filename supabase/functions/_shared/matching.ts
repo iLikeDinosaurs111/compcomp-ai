@@ -489,32 +489,46 @@ function inputsHasOtherWithInference(topics: string[], otherText: string): boole
   return topics.includes("Other") && Boolean(otherText);
 }
 
+export type RankMode = "strict" | "relaxed" | "fallback";
+
 export function scoreCompetition(
   competition: Record<string, unknown>,
   inputs: FormInputs,
   topics: string[],
+  mode: RankMode = "strict",
 ): ScoredCompetition | null {
   const matchedTopics = getMatchedTopicsForCompetition(competition, topics, inputs.otherText);
   const effectiveTopics = topics.filter((t) => t !== "Other");
   const topicDenominator = Math.max(effectiveTopics.length, 1);
 
   const hasOtherOnly = topics.includes("Other") && effectiveTopics.length === 0;
-  const topicScore = hasOtherOnly
+  let topicScore = hasOtherOnly
     ? (matchedTopics.length > 0 ? 1 : 0)
     : matchedTopics.filter((t) => t !== "Other").length / topicDenominator;
 
-  if (topicScore === 0 && !hasOtherOnly) return null;
-
-  const formatScore = scoreFormat(competition, inputs.format);
-  if (inputs.format && formatScore === 0) return null;
-
-  if (inputs.location && !locationMatchesUser(competition, inputs.location, inputs.format)) {
+  if (mode === "fallback") {
+    if (topicScore === 0) topicScore = 0.25;
+  } else if (topicScore === 0 && !hasOtherOnly) {
     return null;
+  }
+
+  let formatScore = scoreFormat(competition, inputs.format);
+  if (mode === "strict") {
+    if (inputs.format && formatScore === 0) return null;
+  } else if (inputs.format && formatScore === 0) {
+    formatScore = 0.35;
+  }
+
+  let locationAllowed = true;
+  if (inputs.location && !locationMatchesUser(competition, inputs.location, inputs.format)) {
+    if (mode === "strict") return null;
+    locationAllowed = false;
   }
 
   const ageScore = scoreAge(competition, inputs.age);
   const gradeScore = scoreGrade(competition, inputs.grade);
-  const locationScore = scoreLocation(competition, inputs.location, inputs.format);
+  let locationScore = scoreLocation(competition, inputs.location, inputs.format);
+  if (!locationAllowed) locationScore *= 0.45;
 
   let profileWeight = 0;
   let profileSum = 0;
@@ -524,23 +538,33 @@ export function scoreCompetition(
   const profileScore = profileWeight ? profileSum / profileWeight : 0.5;
 
   const source = getCompetitionField(competition, ["source"]) || "manual";
-  const supabaseBonus = source !== "web" ? 0.15 : 0;
+  const supabaseBonus = source !== "web" ? 0.15 : 0.05;
+  const modePenalty = mode === "strict" ? 0 : mode === "relaxed" ? -0.05 : -0.12;
 
   const score =
     topicScore * 0.45 +
     profileScore * 0.3 +
     formatScore * 0.15 +
     supabaseBonus +
+    modePenalty +
     (topicScore > 0 ? 0.1 : 0);
 
   if (score <= 0) return null;
 
-  if (!matchedTopics.length) return null;
+  if (!matchedTopics.length && mode !== "fallback") return null;
+
+  const displayTopics = matchedTopics.length
+    ? matchedTopics
+    : mode === "fallback"
+    ? effectiveTopics.slice(0, 1)
+    : [];
+
+  if (!displayTopics.length && mode !== "fallback") return null;
 
   return {
-    competition: { ...competition, _matchedTopics: matchedTopics },
+    competition: { ...competition, _matchedTopics: displayTopics },
     score,
-    matchedTopics,
+    matchedTopics: displayTopics,
   };
 }
 
@@ -554,6 +578,7 @@ export function getUserSearchTopics(inputs: FormInputs): string[] {
 export function rankCompetitions(
   competitions: Record<string, unknown>[],
   inputs: FormInputs,
+  mode: RankMode = "strict",
 ): ScoredCompetition[] {
   const userTopics = getUserSearchTopics(inputs);
   const searchTopics = inputs.selectedTopics.includes("Other")
@@ -567,7 +592,7 @@ export function rankCompetitions(
   for (const competition of competitions) {
     const id = getCompetitionId(competition);
     if (seen.has(id)) continue;
-    const result = scoreCompetition(competition, inputs, uniqueTopics);
+    const result = scoreCompetition(competition, inputs, uniqueTopics, mode);
     if (result) {
       seen.add(id);
       scored.push(result);
@@ -576,6 +601,36 @@ export function rankCompetitions(
 
   scored.sort((a, b) => b.score - a.score);
   return scored;
+}
+
+export function dedupeCompetitionRows(rows: Record<string, unknown>[]): Record<string, unknown>[] {
+  const byLink = new Map<string, Record<string, unknown>>();
+
+  for (const row of rows) {
+    const rawLink = String(row.link ?? row.url ?? "").trim();
+    const key = rawLink ? normalizeCompetitionLink(rawLink) : `id:${String(row.id ?? getCompetitionId(row))}`;
+    const existing = byLink.get(key);
+
+    if (!existing) {
+      byLink.set(key, row);
+      continue;
+    }
+
+    const existingManual = String(existing.source ?? "manual") === "manual";
+    const rowManual = String(row.source ?? "manual") === "manual";
+
+    if (rowManual && !existingManual) {
+      byLink.set(key, row);
+      continue;
+    }
+    if (existingManual && !rowManual) continue;
+
+    const existingId = Number(existing.id ?? 0);
+    const rowId = Number(row.id ?? 0);
+    if (rowId > existingId) byLink.set(key, row);
+  }
+
+  return [...byLink.values()];
 }
 
 export function normalizeCompetitionLink(url: string): string {
