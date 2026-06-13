@@ -812,7 +812,7 @@ async function discoverFromWeb(
     ? "AMC AIME MATHCOUNTS USAMO math competition registration high school official site:.org"
     : userTopics.includes("Science")
     ? "Science Olympiad ISEF science fair registration high school official site:.org"
-    : buildSearchQuery(inputs, userTopics, true);
+    : buildSearchQuery(inputs, userTopics, true));
   const fallbackQuery = searchPhrase
     ? `${searchPhrase} registration official site`
     : `${topicLabel} student competition registration official site:.org`.trim();
