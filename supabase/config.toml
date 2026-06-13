@@ -1,0 +1,2 @@
+[functions.discover-competitions]
+verify_jwt = false

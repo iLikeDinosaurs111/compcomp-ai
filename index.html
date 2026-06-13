@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CompComp AI</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <section class="hero" aria-label="CompComp AI home">
+      <div class="hero__glow" aria-hidden="true"></div>
+
+      <div class="hero__content">
+        <span class="hero__logo" role="img" aria-label="CompComp AI logo">🧭</span>
+        <h1 class="hero__title">CompComp AI</h1>
+        <p class="hero__tagline">
+          Your free-to-use AI platform to discover your next step
+        </p>
+      </div>
+
+      <a class="hero__scroll" href="#get-started" aria-label="Scroll to get started">
+        <svg
+          class="hero__arrow"
+          viewBox="0 0 24 24"
+          fill="none"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <path
+            d="M12 5v14M5 12l7 7 7-7"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </svg>
+      </a>
+    </section>
+
+    <section class="get-started" id="get-started">
+      <div class="get-started__inner">
+        <h2 class="get-started__title">GET STARTED</h2>
+
+        <form class="get-started__form" id="starter-form" novalidate>
+          <div class="get-started__grid">
+            <fieldset class="form-panel form-panel--about">
+              <legend class="form-panel__heading">ABOUT ME</legend>
+
+              <div class="form-panel__box">
+                <div class="field-row">
+                  <label class="field">
+                    <span class="field__label">Age</span>
+                    <input
+                      class="field__input"
+                      type="text"
+                      name="age"
+                      placeholder="16"
+                    />
+                  </label>
+                  <label class="field">
+                    <span class="field__label">Grade</span>
+                    <input
+                      class="field__input"
+                      type="text"
+                      name="grade"
+                      placeholder="11"
+                    />
+                  </label>
+                </div>
+              </div>
+
+              <label class="field field--full">
+                <span class="field__label">location:</span>
+                <input
+                  class="field__input"
+                  type="text"
+                  name="location"
+                  placeholder="Boston, MA"
+                />
+              </label>
+
+              <div class="form-panel__submit-slot" id="submit-slot"></div>
+            </fieldset>
+
+            <fieldset class="form-panel">
+              <legend class="form-panel__heading form-panel__heading--requirements">
+                Competition requirements
+              </legend>
+
+              <div class="form-panel__box">
+                <div class="requirements-section">
+                  <span class="requirements-section__label">Format</span>
+                  <div class="radio-group">
+                    <label class="radio">
+                      <input type="radio" name="format" value="online" />
+                      <span>Online</span>
+                    </label>
+                    <label class="radio">
+                      <input type="radio" name="format" value="in-person" />
+                      <span>In-person</span>
+                    </label>
+                  </div>
+                </div>
+
+                <div class="requirements-section">
+                  <span class="requirements-section__label">Topic</span>
+                  <div class="checkbox-list">
+                    <label class="checkbox">
+                      <input type="checkbox" name="topics" value="Science" />
+                      <span>Science</span>
+                    </label>
+                    <label class="checkbox">
+                      <input type="checkbox" name="topics" value="Technology" />
+                      <span>Technology</span>
+                    </label>
+                    <label class="checkbox">
+                      <input type="checkbox" name="topics" value="Mathematics" />
+                      <span>Mathematics</span>
+                    </label>
+                    <label class="checkbox">
+                      <input type="checkbox" name="topics" value="Arts" />
+                      <span>Arts</span>
+                    </label>
+                    <label class="checkbox">
+                      <input
+                        type="checkbox"
+                        name="topics"
+                        value="Other"
+                        id="topic-other"
+                      />
+                      <span>Other</span>
+                    </label>
+                  </div>
+                  <div class="other-topic-field" id="other-topic-field" hidden>
+                    <label class="field field--full">
+                      <textarea
+                        class="field__textarea field__textarea--compact"
+                        name="other-topic"
+                        id="other-topic-input"
+                        rows="2"
+                        placeholder="Describe what you're looking for (e.g. Regeneron, debate)"
+                        aria-label="Describe what you're looking for"
+                      ></textarea>
+                    </label>
+                  </div>
+                </div>
+              </div>
+            </fieldset>
+          </div>
+
+          <div class="get-started__submit-row" id="default-submit-slot">
+            <button class="get-started__submit" type="submit">find results</button>
+          </div>
+        </form>
+
+        <div class="get-started__results" id="form-results" hidden>
+          <div class="results-header">
+            <h3 class="get-started__results-title">Results</h3>
+            <button class="get-started__edit" type="button" id="edit-form">
+              Edit answers
+            </button>
+          </div>
+
+          <p class="results-banner" id="results-banner" hidden></p>
+          <p class="results-status" id="results-status">Finding competitions…</p>
+
+          <div class="competitions-grid" id="competitions-grid"></div>
+
+          <p class="results-error" id="results-error" hidden></p>
+        </div>
+      </div>
+    </section>
+
+    <script src="config.js"></script>
+    <script src="matching.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+    <script src="script.js"></script>
+  </body>
+</html>
