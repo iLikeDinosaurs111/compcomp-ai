@@ -10,6 +10,7 @@ export interface FormInputs {
   location: string;
   format: string;
   selectedTopics: string[];
+  searchQuery: string;
   otherText: string;
 }
 
@@ -303,6 +304,7 @@ export function competitionMatchesOtherText(competition: Record<string, unknown>
   if (competitionText.includes(normalizedText) || link.includes(normalizedText.replace(/\s+/g, ""))) {
     return true;
   }
+  if (textMatchesKeyword(link, normalizedText)) return true;
 
   const queryTokens = normalizedText.split(" ").filter((word) => word.length >= 2);
   const nameTokens = name.split(" ").filter((word) => word.length >= 2);
@@ -312,6 +314,7 @@ export function competitionMatchesOtherText(competition: Record<string, unknown>
     const allSignificantMatch = significant.every(
       (token) =>
         textMatchesKeyword(competitionText, token) ||
+        textMatchesKeyword(link, token) ||
         nameTokens.some((nameToken) => fuzzyTokenMatch(token, nameToken)),
     );
     if (allSignificantMatch) return true;
@@ -328,11 +331,11 @@ export function competitionMatchesOtherText(competition: Record<string, unknown>
 }
 
 export function getEffectiveSearchText(inputs: FormInputs): string {
-  return String(inputs.otherText ?? "").trim();
+  return String(inputs.searchQuery ?? inputs.otherText ?? "").trim();
 }
 
 export function hasActiveSearchQuery(inputs: FormInputs): boolean {
-  return Boolean(getEffectiveSearchText(inputs));
+  return Boolean(String(inputs.searchQuery ?? "").trim());
 }
 
 export function competitionMatchesTopic(
@@ -616,6 +619,10 @@ export function passesSuggestedRelevanceGate(
   inputs: FormInputs,
   userTopics: string[] = getUserSearchTopics(inputs),
 ): boolean {
+  const searchQuery = String(inputs.searchQuery ?? "").trim();
+  if (searchQuery && competitionMatchesOtherText(competition, searchQuery)) {
+    return true;
+  }
   if (inputs.otherText && competitionMatchesOtherText(competition, inputs.otherText)) {
     return true;
   }

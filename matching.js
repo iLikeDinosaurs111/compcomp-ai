@@ -197,6 +197,7 @@ const DiscoveryMatching = (() => {
     if (competitionText.includes(normalizedText) || link.includes(normalizedText.replace(/\s+/g, ""))) {
       return true;
     }
+    if (textMatchesKeyword(link, normalizedText)) return true;
     const queryTokens = normalizedText.split(" ").filter((word) => word.length >= 2);
     const nameTokens = name.split(" ").filter((word) => word.length >= 2);
     const significant = queryTokens.filter((word) => word.length >= 3);
