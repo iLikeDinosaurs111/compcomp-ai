@@ -44,6 +44,8 @@ const otherSubmitSlot = document.getElementById("submit-slot");
 const otherTopicCheckbox = document.getElementById("topic-other");
 const otherTopicField = document.getElementById("other-topic-field");
 const otherTopicInput = document.getElementById("other-topic-input");
+const searchQueryInput = document.getElementById("search-query-input");
+const resultsDisclaimer = document.getElementById("results-disclaimer");
 
 let supabaseClient = null;
 let activeSupabaseKey = SUPABASE_KEY;
@@ -254,6 +256,9 @@ async function discoverCompetitions(inputs) {
 
 function getFormInputs() {
   const data = new FormData(form);
+  const searchQuery = data.get("search-query")?.trim() || "";
+  const otherTopic = data.get("other-topic")?.trim() || "";
+  const otherText = [searchQuery, otherTopic].filter(Boolean).join(" ").trim();
 
   return {
     age: data.get("age")?.trim() || "",
@@ -261,7 +266,8 @@ function getFormInputs() {
     location: data.get("location")?.trim() || "",
     format: data.get("format")?.trim() || "",
     selectedTopics: data.getAll("topics"),
-    otherText: data.get("other-topic")?.trim() || "",
+    searchQuery,
+    otherText,
   };
 }
 
@@ -494,21 +500,49 @@ function competitionMatchesOtherText(competition, otherText) {
 
   const normalizedText = normalizeInterestText(otherText);
   const competitionText = getCompetitionSearchText(competition);
+  const name = normalizeInterestText(
+    getCompetitionField(competition, ["name", "title", "competition_name"]),
+  );
+  const link = normalizeInterestText(getCompetitionField(competition, ["link", "url"]));
 
   if (!competitionText || !normalizedText) {
     return false;
   }
 
-  if (
-    competitionText.includes(normalizedText) ||
-    normalizedText.includes(competitionText)
-  ) {
+  if (competitionText.includes(normalizedText) || link.includes(normalizedText.replace(/\s+/g, ""))) {
     return true;
   }
 
-  const searchWords = normalizedText.split(" ").filter((word) => word.length >= 3);
+  const queryTokens = normalizedText.split(" ").filter((word) => word.length >= 2);
+  const nameTokens = name.split(" ").filter((word) => word.length >= 2);
+  const significant = queryTokens.filter((word) => word.length >= 3);
 
-  return searchWords.some((word) => textMatchesKeyword(competitionText, word));
+  if (significant.length) {
+    const allSignificantMatch = significant.every(
+      (token) =>
+        textMatchesKeyword(competitionText, token) ||
+        nameTokens.some((nameToken) => {
+          if (token === nameToken || token.includes(nameToken) || nameToken.includes(token)) {
+            return true;
+          }
+          const longer = Math.max(token.length, nameToken.length);
+          const maxDistance = longer <= 5 ? 1 : longer <= 9 ? 2 : 3;
+          return levenshtein(token, nameToken) <= maxDistance;
+        }),
+    );
+    if (allSignificantMatch) return true;
+  }
+
+  if (normalizedText.length >= 5) {
+    if (nameTokens.some((nameToken) => textMatchesKeyword(nameToken, normalizedText) || textMatchesKeyword(normalizedText, nameToken))) {
+      return true;
+    }
+    if (textMatchesKeyword(name, normalizedText)) return true;
+  }
+
+  return queryTokens
+    .filter((word) => word.length >= 3)
+    .some((word) => textMatchesKeyword(competitionText, word));
 }
 
 function competitionMatchesFormat(competition, format) {
@@ -1029,6 +1063,7 @@ function resetResultsView() {
   resultsStatus.hidden = true;
   resultsError.hidden = true;
   resultsError.textContent = "";
+  if (resultsDisclaimer) resultsDisclaimer.hidden = true;
   competitionsGrid.innerHTML = "";
   if (suggestedGrid) suggestedGrid.innerHTML = "";
   if (suggestedSection) suggestedSection.hidden = true;
@@ -1057,12 +1092,12 @@ form.addEventListener("submit", async (event) => {
   const submitRequestId = ++activeSubmitRequestId;
   const inputs = getFormInputs();
 
-  if (!inputs.selectedTopics.length) {
+  if (!inputs.selectedTopics.length && !inputs.otherText) {
     showResultsView();
     resetResultsView();
     resultsBanner.hidden = false;
     resultsBanner.textContent =
-      "Select at least one topic under Competition requirements.";
+      "Select at least one topic or type a search (e.g. Steminate hackathon).";
     renderCompetitions([], [], { hasExactMatches: false });
     return;
   }
@@ -1073,7 +1108,7 @@ form.addEventListener("submit", async (event) => {
     syncOtherTopicField();
     resultsBanner.hidden = false;
     resultsBanner.textContent =
-      "You selected Other — describe what you're looking for in the text box.";
+      "You selected Other — add details in the search box or Other field.";
     renderCompetitions([], [], { hasExactMatches: false });
     return;
   }
@@ -1127,6 +1162,10 @@ form.addEventListener("submit", async (event) => {
     if (bannerMessages.length) {
       resultsBanner.hidden = false;
       resultsBanner.textContent = bannerMessages.join(" ");
+    }
+
+    if (resultsDisclaimer) {
+      resultsDisclaimer.hidden = false;
     }
 
     renderCompetitions(matchedCompetitions, topics, {

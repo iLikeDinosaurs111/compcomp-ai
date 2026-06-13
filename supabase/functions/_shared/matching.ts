@@ -280,14 +280,59 @@ export function inferTopicsFromInputs(inputs: FormInputs): {
   return { topics: allTopics.length ? allTopics : selected, inferredTopics };
 }
 
+function fuzzyTokenMatch(a: string, b: string): boolean {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  if (a.includes(b) || b.includes(a)) return true;
+  const longer = Math.max(a.length, b.length);
+  const maxDistance = longer <= 5 ? 1 : longer <= 9 ? 2 : 3;
+  return levenshtein(a, b) <= maxDistance;
+}
+
 export function competitionMatchesOtherText(competition: Record<string, unknown>, otherText: string): boolean {
   if (!otherText) return false;
+
   const normalizedText = normalizeInterestText(otherText);
   const competitionText = getCompetitionSearchText(competition);
+  const name = normalizeInterestText(
+    getCompetitionField(competition, ["name", "title", "competition_name"]),
+  );
+  const link = normalizeInterestText(getCompetitionField(competition, ["link", "url"]));
+
   if (!competitionText || !normalizedText) return false;
-  if (competitionText.includes(normalizedText) || normalizedText.includes(competitionText)) return true;
-  const searchWords = normalizedText.split(" ").filter((word) => word.length >= 3);
-  return searchWords.some((word) => textMatchesKeyword(competitionText, word));
+  if (competitionText.includes(normalizedText) || link.includes(normalizedText.replace(/\s+/g, ""))) {
+    return true;
+  }
+
+  const queryTokens = normalizedText.split(" ").filter((word) => word.length >= 2);
+  const nameTokens = name.split(" ").filter((word) => word.length >= 2);
+  const significant = queryTokens.filter((word) => word.length >= 3);
+
+  if (significant.length) {
+    const allSignificantMatch = significant.every(
+      (token) =>
+        textMatchesKeyword(competitionText, token) ||
+        nameTokens.some((nameToken) => fuzzyTokenMatch(token, nameToken)),
+    );
+    if (allSignificantMatch) return true;
+  }
+
+  if (normalizedText.length >= 5) {
+    if (nameTokens.some((nameToken) => fuzzyTokenMatch(normalizedText, nameToken))) return true;
+    if (textMatchesKeyword(name, normalizedText)) return true;
+  }
+
+  return queryTokens
+    .filter((word) => word.length >= 3)
+    .some((word) => textMatchesKeyword(competitionText, word));
+}
+
+export function getEffectiveSearchText(inputs: FormInputs): string {
+  return String(inputs.otherText ?? "").trim();
+}
+
+export function hasActiveSearchQuery(inputs: FormInputs): boolean {
+  return Boolean(getEffectiveSearchText(inputs));
 }
 
 export function competitionMatchesTopic(
@@ -571,6 +616,10 @@ export function passesSuggestedRelevanceGate(
   inputs: FormInputs,
   userTopics: string[] = getUserSearchTopics(inputs),
 ): boolean {
+  if (inputs.otherText && competitionMatchesOtherText(competition, inputs.otherText)) {
+    return true;
+  }
+
   const searchTopics = userTopics.filter((t) => t !== "Other");
 
   if (userTopics.includes("Other") && inputs.otherText) {
@@ -662,7 +711,13 @@ export function scoreCompetition(
     : matchedTopics.filter((t) => t !== "Other").length / topicDenominator;
 
   if (topicScore === 0 && !hasOtherOnly) {
-    return null;
+    if (hasActiveSearchQuery(inputs) && competitionMatchesOtherText(competition, inputs.otherText)) {
+      topicScore = effectiveTopics.length ? 0.9 : 1;
+    } else {
+      return null;
+    }
+  } else if (hasActiveSearchQuery(inputs) && competitionMatchesOtherText(competition, inputs.otherText)) {
+    topicScore = Math.min(1, topicScore + 0.25);
   }
 
   let formatScore = scoreFormat(competition, inputs.format);

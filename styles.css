@@ -190,13 +190,42 @@ body {
 }
 
 .get-started__title {
-  margin-bottom: clamp(1.5rem, 3.5vh, 2.75rem);
+  margin-bottom: clamp(0.75rem, 2vh, 1.25rem);
   font-size: clamp(1.75rem, 3.5vh, 2.5rem);
   font-weight: 700;
   text-align: center;
   letter-spacing: 0.08em;
   text-decoration: underline;
   text-underline-offset: 0.35em;
+}
+
+.get-started__intro {
+  max-width: 42rem;
+  margin: 0 auto clamp(1.25rem, 3vh, 2rem);
+  text-align: center;
+  font-size: clamp(0.92rem, 2vh, 1.05rem);
+  line-height: 1.55;
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.field--search {
+  margin-bottom: clamp(1rem, 2.5vh, 1.5rem);
+}
+
+.field__input--search {
+  font-size: clamp(1rem, 2.2vh, 1.1rem);
+}
+
+.results-disclaimer {
+  margin-top: clamp(1.25rem, 3vh, 2rem);
+  padding: 0.85rem 1rem;
+  border-radius: 0.5rem;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  font-size: clamp(0.8rem, 1.8vh, 0.9rem);
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.62);
+  text-align: center;
 }
 
 .get-started__form {

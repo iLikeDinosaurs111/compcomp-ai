@@ -24,7 +24,7 @@
         <span class="hero__logo" role="img" aria-label="CompComp AI logo">🧭</span>
         <h1 class="hero__title">CompComp AI</h1>
         <p class="hero__tagline">
-          Your free-to-use AI platform to discover your next step
+          Tell us about yourself — we search competitions and programs matched to you
         </p>
       </div>
 
@@ -50,7 +50,25 @@
       <div class="get-started__inner">
         <h2 class="get-started__title">GET STARTED</h2>
 
+        <p class="get-started__intro">
+          CompComp AI takes your age, grade, location, format, and interests, then searches our
+          database and the web for <strong>competitions and programs</strong> you can join.
+          Use the search box like Google — try a name even with typos (e.g. “stemintea hackathon”).
+        </p>
+
         <form class="get-started__form" id="starter-form" novalidate>
+          <label class="field field--search field--full">
+            <span class="field__label">Search competitions &amp; programs</span>
+            <input
+              class="field__input field__input--search"
+              type="search"
+              name="search-query"
+              id="search-query-input"
+              placeholder="Steminate hackathon, USACO, science fair…"
+              autocomplete="off"
+            />
+          </label>
+
           <div class="get-started__grid">
             <fieldset class="form-panel form-panel--about">
               <legend class="form-panel__heading">ABOUT ME</legend>
@@ -147,7 +165,7 @@
                         name="other-topic"
                         id="other-topic-input"
                         rows="2"
-                        placeholder="Describe what you're looking for (e.g. Regeneron, debate)"
+                        placeholder="More details (optional) — e.g. Regeneron, mock trial, summer program"
                         aria-label="Describe what you're looking for"
                       ></textarea>
                     </label>
@@ -181,6 +199,11 @@
             <p class="competitions-suggested__note">Extra competitions from our database and your web search — no extra search credits used.</p>
             <div class="competitions-grid competitions-grid--suggested" id="competitions-suggested-grid"></div>
           </section>
+
+          <p class="results-disclaimer" id="results-disclaimer" hidden>
+            Results are automatically matched and may be incomplete or inaccurate — always verify
+            deadlines, eligibility, and registration on the official competition site.
+          </p>
 
           <p class="results-error" id="results-error" hidden></p>
         </div>

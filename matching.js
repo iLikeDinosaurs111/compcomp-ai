@@ -189,10 +189,32 @@ const DiscoveryMatching = (() => {
     if (!otherText) return false;
     const normalizedText = normalizeInterestText(otherText);
     const competitionText = getCompetitionSearchText(competition);
+    const name = normalizeInterestText(
+      getCompetitionField(competition, ["name", "title", "competition_name"]),
+    );
+    const link = normalizeInterestText(getCompetitionField(competition, ["link", "url"]));
     if (!competitionText || !normalizedText) return false;
-    if (competitionText.includes(normalizedText) || normalizedText.includes(competitionText)) return true;
-    const searchWords = normalizedText.split(" ").filter((word) => word.length >= 3);
-    return searchWords.some((word) => textMatchesKeyword(competitionText, word));
+    if (competitionText.includes(normalizedText) || link.includes(normalizedText.replace(/\s+/g, ""))) {
+      return true;
+    }
+    const queryTokens = normalizedText.split(" ").filter((word) => word.length >= 2);
+    const nameTokens = name.split(" ").filter((word) => word.length >= 2);
+    const significant = queryTokens.filter((word) => word.length >= 3);
+    if (significant.length) {
+      const allSignificantMatch = significant.every(
+        (token) =>
+          textMatchesKeyword(competitionText, token) ||
+          nameTokens.some((nameToken) => {
+            if (token === nameToken || token.includes(nameToken) || nameToken.includes(token)) return true;
+            const longer = Math.max(token.length, nameToken.length);
+            const maxDistance = longer <= 5 ? 1 : longer <= 9 ? 2 : 3;
+            return levenshtein(token, nameToken) <= maxDistance;
+          }),
+      );
+      if (allSignificantMatch) return true;
+    }
+    if (normalizedText.length >= 5 && textMatchesKeyword(name, normalizedText)) return true;
+    return queryTokens.filter((word) => word.length >= 3).some((word) => textMatchesKeyword(competitionText, word));
   }
 
   function competitionMatchesTopic(competition, topic, otherText = "") {
@@ -205,7 +227,7 @@ const DiscoveryMatching = (() => {
 
     if (canonicalField) {
       if (topic === "Finance") return canonicalField === "Finance" || canonicalField === "Mathematics";
-      return canonicalField === topic;
+      if (canonicalField === topic) return true;
     }
 
     const keywords = INTEREST_TOPICS[topic] ?? [];

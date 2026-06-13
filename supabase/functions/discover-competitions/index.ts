@@ -23,6 +23,7 @@ import {
   competitionMatchesTopic,
   pickSuggestedCompetitions,
   passesSuggestedRelevanceGate,
+  competitionMatchesOtherText,
 } from "../_shared/matching.ts";
 import {
   inferTimeLabel,
@@ -152,7 +153,11 @@ function parseInputs(body: Record<string, unknown>): FormInputs | null {
     ? body.selectedTopics.map(String)
     : [];
 
-  if (!selectedTopics.length && !String(body.otherText ?? "").trim()) {
+  const searchQuery = String(body.searchQuery ?? "").trim();
+  const otherTopic = String(body.otherText ?? "").trim();
+  const otherText = [searchQuery, otherTopic].filter(Boolean).join(" ").trim();
+
+  if (!selectedTopics.length && !otherText) {
     return null;
   }
 
@@ -162,7 +167,7 @@ function parseInputs(body: Record<string, unknown>): FormInputs | null {
     location: String(body.location ?? "").trim(),
     format: String(body.format ?? "").trim(),
     selectedTopics,
-    otherText: String(body.otherText ?? "").trim(),
+    otherText,
   };
 }
 
@@ -658,6 +663,7 @@ function competitionMatchesUserTopics(
   userTopics: string[],
   otherText: string,
 ): boolean {
+  if (otherText && competitionMatchesOtherText(comp, otherText)) return true;
   if (userTopics.includes("Other")) return true;
   if (!userTopics.length) return true;
   return getMatchedTopicsForCompetition(comp, userTopics, otherText).some((t) => t !== "Other");
@@ -702,7 +708,10 @@ async function discoverFromWeb(
   const existingAtStart = new Set(existingLinks);
 
   const topicLabel = userTopics.filter((t) => t !== "Other" && t !== "Finance").join(" ");
-  const primaryQuery = userTopics.includes("Technology")
+  const searchPhrase = inputs.otherText.trim();
+  const primaryQuery = searchPhrase
+    ? `${searchPhrase} student competition program registration official`
+    : userTopics.includes("Technology")
     ? "USACO hackathon FIRST robotics programming contest registration high school official site:.org"
     : userTopics.includes("Mathematics")
     ? "AMC AIME MATHCOUNTS USAMO math competition registration high school official site:.org"
@@ -740,13 +749,13 @@ async function discoverFromWeb(
       errors.push(String(error));
     }
 
-    const goodCount = allSearchResults.filter((r) => passesWebCandidateGate(r, userTopics)).length;
+    const goodCount = allSearchResults.filter((r) => passesWebCandidateGate(r, userTopics, inputs.otherText)).length;
     if (goodCount >= maxDisplay) break;
   }
 
   // Rule filters only for web — one Gemini call runs on the final merged list (avoids 429 rate limits).
   const rankedResults = [...allSearchResults]
-    .filter((r) => passesWebCandidateGate(r, userTopics))
+    .filter((r) => passesWebCandidateGate(r, userTopics, inputs.otherText))
     .sort((a, b) => scoreSearchResult(b) - scoreSearchResult(a));
 
   const displayResults: Record<string, unknown>[] = [];
@@ -893,8 +902,12 @@ function pickWithProfileVariety(
   return picked;
 }
 
-function passesWebCandidateGate(result: SearchResult, userTopics: string[]): boolean {
+function passesWebCandidateGate(result: SearchResult, userTopics: string[], otherText = ""): boolean {
   if (isRejectedResult(result)) return false;
+  if (otherText) {
+    const stub = { name: result.title, details: result.snippet, link: result.url, topic: "" };
+    if (competitionMatchesOtherText(stub, otherText)) return true;
+  }
   if (passesStrictCompetitionGate(result) || passesRelaxedCompetitionGate(result)) return true;
   if (!userTopics.length || userTopics.includes("Other")) return false;
   const stub = { name: result.title, details: result.snippet, topic: "" };
@@ -1017,7 +1030,7 @@ Deno.serve(async (req) => {
     }
 
     if (inputs.selectedTopics.includes("Other") && !inputs.otherText) {
-      return jsonResponse({ error: "You selected Other — describe what you're looking for." }, 400);
+      return jsonResponse({ error: "You selected Other — add details in the search box or Other field." }, 400);
     }
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
