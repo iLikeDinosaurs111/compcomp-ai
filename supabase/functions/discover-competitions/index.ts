@@ -18,6 +18,7 @@ import {
   sortScoredWithProfileVariety,
   inferCompetitionLocation,
   refreshWebRowMetadata,
+  getMatchedTopicsForCompetition,
 } from "../_shared/matching.ts";
 import {
   inferTimeLabel,
@@ -93,6 +94,7 @@ const KNOWN_COMPETITION_SIGNALS = [
   /\b(deca|hosa|fbla|nhd|national history day)\b/i,
   /\b(olympiad|contest information|competition information)\b/i,
   /\b(register|registration|apply|eligibility|rules and guidelines)\b/i,
+  /\b(usaco|hackathon|robotics|technovation|cyberpatriot|first robotics|programming contest|coding competition)\b/i,
 ];
 
 const DB_PREFERRED_COUNT = 5;
@@ -310,7 +312,11 @@ function isOfficialCompetitionResult(result: SearchResult): boolean {
       host.includes("contest") ||
       host.includes("olympiad") ||
       host.includes("mathcounts") ||
-      host.includes("sciencebowl")
+      host.includes("sciencebowl") ||
+      host.includes("usaco") ||
+      host.includes("firstinspires") ||
+      host.includes("technovation") ||
+      host.includes("cyberpatriot")
     ) {
       return true;
     }
@@ -502,6 +508,15 @@ function buildCompetitionFromSearchResult(
   const combinedText = `${result.title} ${result.snippet}`;
   let topic = inferBestTopicForUser(combinedText, userTopics);
 
+  if (!topic && userTopics.length > 0) {
+    const matched = getMatchedTopicsForCompetition(
+      { name: result.title, details: result.snippet, topic: "" },
+      userTopics,
+      inputs.otherText,
+    );
+    topic = matched.find((t) => t !== "Other") ?? null;
+  }
+
   if (!topic && strictTopic && userTopics.length > 0 && !userTopics.includes("Other")) {
     return null;
   }
@@ -571,12 +586,18 @@ async function discoverFromWeb(
   const existingAtStart = new Set(existingLinks);
 
   const topicLabel = userTopics.filter((t) => t !== "Other" && t !== "Finance").join(" ");
-  const queries = [
+  const queries: string[] = [];
+  if (userTopics.includes("Technology")) {
+    queries.push(
+      "USACO hackathon FIRST robotics programming contest registration high school site:.org",
+    );
+  }
+  queries.push(
     buildSearchQuery(inputs, userTopics, true),
     `${topicLabel} olympiad registration site:.org ${inputs.location}`.trim(),
     `${inputs.grade} ${topicLabel} contest registration high school official`.trim(),
-  ].slice(0, MAX_SERPER_QUERIES);
-  const uniqueQueries = [...new Set(queries.filter(Boolean))];
+  );
+  const uniqueQueries = [...new Set(queries.filter(Boolean))].slice(0, MAX_SERPER_QUERIES + 1);
   const errors: string[] = [];
 
   const allSearchResults: SearchResult[] = [];
@@ -604,8 +625,8 @@ async function discoverFromWeb(
       (result) => !existingAtStart.has(normalizeCompetitionLink(result.url)),
     ).length;
 
-    if (goodCount >= MAX_WEB_PERSIST || newUrlCount >= maxDisplay) break;
-    if (serperQueries >= 1 && newUrlCount === 0 && allSearchResults.length > 0) break;
+    if (goodCount >= MAX_WEB_PERSIST || goodCount >= maxDisplay * 2) break;
+    if (serperQueries >= MAX_SERPER_QUERIES + (userTopics.includes("Technology") ? 1 : 0)) break;
   }
 
   let rankedResults = [...allSearchResults]
@@ -637,7 +658,7 @@ async function discoverFromWeb(
       inputs,
       userTopics,
       imageUrl,
-      true,
+      false,
     );
     if (!competition) continue;
 
@@ -779,6 +800,26 @@ function fillFromCachedWeb(
   );
 }
 
+function fillFromBroadDatabase(
+  eligibleDb: Record<string, unknown>[],
+  inputs: FormInputs,
+  seen: Set<string>,
+  limit: number,
+): Record<string, unknown>[] {
+  if (limit <= 0 || !eligibleDb.length) return [];
+
+  const profileSeed = buildProfileSeed(inputs);
+  return pickWithProfileVariety(
+    eligibleDb,
+    inputs,
+    "relaxed",
+    limit,
+    seen,
+    profileSeed,
+    { isAlternative: true },
+  );
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -847,7 +888,7 @@ Deno.serve(async (req) => {
 
     const serperKey = Deno.env.get("SERPER_API_KEY") ?? "";
     const targetWebSlots = serperKey
-      ? Math.max(1, Math.ceil(TARGET_RESULTS / 2))
+      ? (combinedDb.length < 3 ? TARGET_RESULTS : Math.max(1, Math.ceil(TARGET_RESULTS / 2)))
       : Math.max(0, TARGET_RESULTS - combinedDb.length);
 
     // STEP 2: Refresh from web search for profile-specific variety when Serper is available
@@ -891,6 +932,16 @@ Deno.serve(async (req) => {
     );
     combinedDb = [...combinedDb, ...cachedFill];
 
+    if (combinedDb.length < TARGET_RESULTS) {
+      const broadFill = fillFromBroadDatabase(
+        eligibleDb,
+        inputs,
+        seenIds,
+        TARGET_RESULTS - combinedDb.length,
+      );
+      combinedDb = [...combinedDb, ...broadFill];
+    }
+
     const strictCount = combinedDb.filter((c) => !c._isAlternative).length;
     const alternativeCount = combinedDb.filter((c) => c._isAlternative).length;
 
@@ -916,7 +967,7 @@ Deno.serve(async (req) => {
     }
 
     if (isAlternativeResults && strictCount === 0) {
-      bannerParts.push("No exact profile match — showing similar upcoming alternatives from our database.");
+      bannerParts.push("Showing related upcoming competitions for your topic — broaden grade or location for tighter matches.");
     } else if (isAlternativeResults) {
       bannerParts.push(`${alternativeCount} similar alternative${alternativeCount === 1 ? "" : "s"} included.`);
     }
@@ -932,9 +983,11 @@ Deno.serve(async (req) => {
         `${webResults.length} refreshed from web search (${serperQueries} Serper ${serperQueries === 1 ? "query" : "queries"}) — profile-specific picks.`,
       );
     } else if (webSearchUsed && searchHits === 0) {
-      bannerParts.push(`All ${dbCount} from database. Web search returned no results.`);
+      bannerParts.push(`Web search returned no results.`);
+    } else if (webSearchUsed && competitions.length === 0) {
+      bannerParts.push(`No upcoming matches in our database or web search for this profile.`);
     } else if (webSearchUsed) {
-      bannerParts.push(`All ${dbCount} from database — skipped extra web search (already saved).`);
+      bannerParts.push(`${searchHits} web hits reviewed — showing best topic matches from database and search.`);
     }
 
     if (inferredTopics.length) {

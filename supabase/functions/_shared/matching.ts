@@ -88,7 +88,7 @@ const TOPIC_NEGATIVE_KEYWORDS: Record<string, string[]> = {
     "mock trial championship", "trial championship",
   ],
   Science: ["poetry", "poem", "music", "debate", "history day", "art competition"],
-  Technology: ["poetry", "poem", "music", "dance", "history day"],
+  Technology: ["poetry", "poem", "music", "dance", "history day", "mock trial", "courtroom", "litigation"],
   Arts: ["calculus", "algebra", "geometry", "olympiad", "hackathon", "robotics", "programming"],
   Finance: ["poetry", "poem", "music", "dance", "science fair", "biology"],
 };
@@ -509,6 +509,20 @@ export function scoreFormat(competition: Record<string, unknown>, format: string
   return competitionFormat.includes(normalizedFormat) ? 1 : 0;
 }
 
+function inputsHasOtherWithInference(topics: string[], otherText: string): boolean {
+  return topics.includes("Other") && Boolean(otherText);
+}
+
+const STEM_TOPICS = new Set(["Science", "Technology", "Mathematics"]);
+
+function canonicalTopicAllowsKeywordMatch(canonical: string | null, topic: string): boolean {
+  if (!canonical) return true;
+  if (canonical === topic) return true;
+  if (topic === "Finance" && (canonical === "Mathematics" || canonical === "Finance")) return true;
+  if (STEM_TOPICS.has(canonical) && STEM_TOPICS.has(topic)) return true;
+  return false;
+}
+
 export function getMatchedTopicsForCompetition(
   competition: Record<string, unknown>,
   topics: string[],
@@ -522,14 +536,27 @@ export function getMatchedTopicsForCompetition(
       matched.push(topic);
     }
   }
+
+  if (!matched.length) {
+    for (const topic of topics) {
+      if (topic === "Other") continue;
+      const canonical = getCanonicalTopicFromField(competition);
+      if (!canonicalTopicAllowsKeywordMatch(canonical, topic)) continue;
+      const searchText = getCompetitionSearchText(competition);
+      if (topicConflictsWithNegativeSignals(topic, searchText)) continue;
+      const keywords = INTEREST_TOPICS[topic] ?? [];
+      if (keywords.some((kw) => kw.length >= 4 && textMatchesKeyword(searchText, kw))) {
+        matched.push(topic);
+      } else if (textMatchesKeyword(searchText, topic)) {
+        matched.push(topic);
+      }
+    }
+  }
+
   if (inputsHasOtherWithInference(topics, otherText) && matched.length === 0) {
     if (competitionMatchesOtherText(competition, otherText)) matched.push("Other");
   }
   return matched;
-}
-
-function inputsHasOtherWithInference(topics: string[], otherText: string): boolean {
-  return topics.includes("Other") && Boolean(otherText);
 }
 
 export type RankMode = "strict" | "relaxed" | "fallback";
