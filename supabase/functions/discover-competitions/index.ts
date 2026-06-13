@@ -75,6 +75,15 @@ const NEWS_AND_JUNK_PATTERNS = [
   /\b(school district|board of education)\b/i,
   /\|\s*[^|]+\s+high school\s*$/i,
   /\b(campus news|student news|weekly update)\b/i,
+  /\blive feed\b/i,
+  /\b\d+\s+months?\s+ago\b/i,
+  /\b\d+\s+days?\s+ago\b/i,
+  /\b\d+\s+weeks?\s+ago\b/i,
+  /\bplease see the event link\b/i,
+  /\belementary school\b/i,
+  /\bmiddle school\b/i,
+  /\bkindergarten\b/i,
+  /#\w{3,}/i,
 ];
 
 const RESULTS_PAGE_PATTERNS = [
@@ -97,12 +106,13 @@ const KNOWN_COMPETITION_SIGNALS = [
   /\b(usaco|hackathon|robotics|technovation|cyberpatriot|first robotics|programming contest|coding competition)\b/i,
 ];
 
-const DB_PREFERRED_COUNT = 5;
-const MAX_CURATED_DB_SLOTS = 4;
-const MAX_CACHED_WEB_SLOTS = 3;
-const MAX_SERPER_QUERIES = 2;
-const MAX_WEB_PERSIST = 20;
-const SERPER_RESULTS_PER_QUERY = 10;
+const DB_PREFERRED_COUNT = 7;
+const TARGET_DB_SLOTS = 7;
+const TARGET_WEB_SLOTS = 3;
+const MAX_SERPER_QUERIES = 1;
+const MAX_SERPER_QUERIES_WHEN_EMPTY = 2;
+const MAX_WEB_PERSIST = 12;
+const SERPER_RESULTS_PER_QUERY = 8;
 
 interface SearchResult {
   title: string;
@@ -272,7 +282,24 @@ function isRejectedResult(result: SearchResult): boolean {
 
   if (/\b(top|best)\b/.test(title) && /\d+/.test(title)) return true;
 
+  if (isSchoolOrSocialFeed(result)) return true;
+
   return false;
+}
+
+function isSchoolOrSocialFeed(result: SearchResult): boolean {
+  const combined = `${result.title} ${result.snippet}`.toLowerCase();
+
+  const feedSignals =
+    /\blive feed\b/.test(combined) ||
+    /\b\d+\s+(months?|days?|weeks?)\s+ago\b/.test(combined) ||
+    /\|\s*[^|]*\b(elementary|middle|high)\s+school\b/i.test(result.title) ||
+    (/\belementary school\b/.test(combined) && !looksLikeCompetition(combined));
+
+  if (!feedSignals) return false;
+
+  return !KNOWN_COMPETITION_SIGNALS.some((pattern) => pattern.test(combined)) &&
+    !looksLikeCompetition(combined);
 }
 
 function isOfficialCompetitionResult(result: SearchResult): boolean {
@@ -340,9 +367,9 @@ async function filterWithGemini(results: SearchResult[], apiKey: string): Promis
 
   const prompt = `You filter search results for a high school competition finder app.
 
-KEEP only official competition pages a student can enter (registration, rules, eligibility, official org homepage for a named contest like Science Bowl or MATHCOUNTS).
+KEEP only official competition pages a student can enter (registration, rules, eligibility, official org homepage for a named contest like Science Bowl, MATHCOUNTS, USACO, or FIRST Robotics).
 
-REJECT: news articles, photos/video stories, school win announcements, listicles ("top 10"), summer program roundups, college admissions blogs, PDFs, Quora, generic school homepages, local news.
+REJECT: school Facebook/social live feeds, "Live Feed | School Name", posts with "2 months ago", elementary school announcements, vague "see event link" posts, kindergarten events, news articles, photos/video stories, school win announcements, listicles ("top 10"), summer program roundups, college admissions blogs, PDFs, Quora, generic school homepages, local news, results pages.
 
 Results:
 ${numbered}
@@ -522,6 +549,15 @@ function buildCompetitionFromSearchResult(
   }
 
   topic = topic ?? userTopics[0] ?? "Science";
+  const matchedTopics = getMatchedTopicsForCompetition(
+    { name: result.title, details: result.snippet, topic: String(topic) },
+    userTopics,
+    inputs.otherText,
+  ).filter((t) => t !== "Other");
+  if (userTopics.length > 0 && !userTopics.includes("Other") && matchedTopics.length === 0) {
+    return null;
+  }
+  if (matchedTopics.length) topic = matchedTopics[0];
   const format = inputs.format || inferFormatFromText(combinedText) || "online";
   const time = inferTimeLabel(combinedText);
 
@@ -560,10 +596,26 @@ function competitionRecordToSearchResult(comp: Record<string, unknown>): SearchR
   };
 }
 
-function isRejectedCompetitionRecord(comp: Record<string, unknown>): boolean {
+function competitionMatchesUserTopics(
+  comp: Record<string, unknown>,
+  userTopics: string[],
+  otherText: string,
+): boolean {
+  if (userTopics.includes("Other")) return true;
+  if (!userTopics.length) return true;
+  return getMatchedTopicsForCompetition(comp, userTopics, otherText).some((t) => t !== "Other");
+}
+
+function isRejectedCompetitionRecord(
+  comp: Record<string, unknown>,
+  userTopics: string[] = [],
+  otherText = "",
+): boolean {
   if (isCompetitionResultsPage(comp)) return true;
   if (isRejectedResult(competitionRecordToSearchResult(comp))) return true;
-  return !isCompetitionUpcoming(comp);
+  if (!isCompetitionUpcoming(comp)) return true;
+  if (userTopics.length && !competitionMatchesUserTopics(comp, userTopics, otherText)) return true;
+  return false;
 }
 
 async function discoverFromWeb(
@@ -577,34 +629,34 @@ async function discoverFromWeb(
   newWebCount: number;
   searchHits: number;
   serperQueries: number;
+  geminiFilterUsed: boolean;
   errors: string[];
 }> {
   if (maxDisplay <= 0) {
-    return { imported: [], newWebCount: 0, searchHits: 0, serperQueries: 0, errors: [] };
+    return { imported: [], newWebCount: 0, searchHits: 0, serperQueries: 0, geminiFilterUsed: false, errors: [] };
   }
 
   const existingAtStart = new Set(existingLinks);
 
   const topicLabel = userTopics.filter((t) => t !== "Other" && t !== "Finance").join(" ");
-  const queries: string[] = [];
-  if (userTopics.includes("Technology")) {
-    queries.push(
-      "USACO hackathon FIRST robotics programming contest registration high school site:.org",
-    );
-  }
-  queries.push(
-    buildSearchQuery(inputs, userTopics, true),
-    `${topicLabel} olympiad registration site:.org ${inputs.location}`.trim(),
-    `${inputs.grade} ${topicLabel} contest registration high school official`.trim(),
-  );
-  const uniqueQueries = [...new Set(queries.filter(Boolean))].slice(0, MAX_SERPER_QUERIES + 1);
+  const primaryQuery = userTopics.includes("Technology")
+    ? "USACO hackathon FIRST robotics programming contest registration high school official site:.org"
+    : buildSearchQuery(inputs, userTopics, true);
+  const fallbackQuery = `${topicLabel} student competition registration official site:.org`.trim();
+  const queryPlan = [primaryQuery, fallbackQuery].filter(Boolean);
   const errors: string[] = [];
 
   const allSearchResults: SearchResult[] = [];
   const seenUrls = new Set<string>();
   let serperQueries = 0;
+  let geminiFilterUsed = false;
 
-  for (const query of uniqueQueries) {
+  for (let i = 0; i < queryPlan.length; i += 1) {
+    const query = queryPlan[i];
+    if (i > 0 && allSearchResults.filter(isOfficialCompetitionResult).length >= maxDisplay) break;
+    if (serperQueries >= MAX_SERPER_QUERIES_WHEN_EMPTY) break;
+    if (i > 0 && serperQueries >= MAX_SERPER_QUERIES) break;
+
     try {
       const serperKey = Deno.env.get("SERPER_API_KEY") ?? "";
       if (serperKey) serperQueries += 1;
@@ -621,12 +673,7 @@ async function discoverFromWeb(
     }
 
     const goodCount = allSearchResults.filter(isOfficialCompetitionResult).length;
-    const newUrlCount = allSearchResults.filter(
-      (result) => !existingAtStart.has(normalizeCompetitionLink(result.url)),
-    ).length;
-
-    if (goodCount >= MAX_WEB_PERSIST || goodCount >= maxDisplay * 2) break;
-    if (serperQueries >= MAX_SERPER_QUERIES + (userTopics.includes("Technology") ? 1 : 0)) break;
+    if (goodCount >= maxDisplay) break;
   }
 
   let rankedResults = [...allSearchResults]
@@ -636,6 +683,7 @@ async function discoverFromWeb(
   const geminiKey = Deno.env.get("GEMINI_API_KEY") ?? "";
   if (geminiKey && rankedResults.length) {
     rankedResults = await filterWithGemini(rankedResults, geminiKey);
+    geminiFilterUsed = true;
   }
 
   const displayResults: Record<string, unknown>[] = [];
@@ -658,7 +706,7 @@ async function discoverFromWeb(
       inputs,
       userTopics,
       imageUrl,
-      false,
+      true,
     );
     if (!competition) continue;
 
@@ -709,6 +757,7 @@ async function discoverFromWeb(
     newWebCount,
     searchHits: allSearchResults.length,
     serperQueries,
+    geminiFilterUsed,
     errors,
   };
 }
@@ -743,33 +792,28 @@ function pickWithProfileVariety(
   return picked;
 }
 
-function fillFromCuratedDatabase(
-  manualEligible: Record<string, unknown>[],
+function fillDatabaseResults(
+  pool: Record<string, unknown>[],
   inputs: FormInputs,
+  limit: number,
 ): Record<string, unknown>[] {
+  if (limit <= 0 || !pool.length) return [];
+
   const profileSeed = buildProfileSeed(inputs);
   const seen = new Set<string>();
-  const combined: Record<string, unknown>[] = [];
+  const picked: Record<string, unknown>[] = [];
 
-  combined.push(
-    ...pickWithProfileVariety(
-      manualEligible,
-      inputs,
-      "strict",
-      MAX_CURATED_DB_SLOTS,
-      seen,
-      profileSeed,
-      { isAlternative: false },
-    ),
+  picked.push(
+    ...pickWithProfileVariety(pool, inputs, "strict", limit, seen, profileSeed, { isAlternative: false }),
   );
 
-  if (combined.length < MAX_CURATED_DB_SLOTS) {
-    combined.push(
+  if (picked.length < limit) {
+    picked.push(
       ...pickWithProfileVariety(
-        manualEligible,
+        pool,
         inputs,
         "relaxed",
-        MAX_CURATED_DB_SLOTS - combined.length,
+        limit - picked.length,
         seen,
         profileSeed,
         { isAlternative: true },
@@ -777,47 +821,34 @@ function fillFromCuratedDatabase(
     );
   }
 
-  return combined;
+  return picked;
 }
 
-function fillFromCachedWeb(
-  cachedWeb: Record<string, unknown>[],
-  inputs: FormInputs,
-  seen: Set<string>,
+function mergeResultsWebFirst(
+  webResults: Record<string, unknown>[],
+  dbResults: Record<string, unknown>[],
   limit: number,
 ): Record<string, unknown>[] {
-  if (limit <= 0 || !cachedWeb.length) return [];
+  const merged: Record<string, unknown>[] = [];
+  const seen = new Set<string>();
 
-  const profileSeed = buildProfileSeed(inputs);
-  return pickWithProfileVariety(
-    cachedWeb,
-    inputs,
-    "relaxed",
-    Math.min(limit, MAX_CACHED_WEB_SLOTS),
-    seen,
-    profileSeed,
-    { isAlternative: true },
-  );
-}
+  for (const comp of webResults) {
+    if (merged.length >= limit) break;
+    const id = getCompetitionId(comp);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    merged.push(comp);
+  }
 
-function fillFromBroadDatabase(
-  eligibleDb: Record<string, unknown>[],
-  inputs: FormInputs,
-  seen: Set<string>,
-  limit: number,
-): Record<string, unknown>[] {
-  if (limit <= 0 || !eligibleDb.length) return [];
+  for (const comp of dbResults) {
+    if (merged.length >= limit) break;
+    const id = getCompetitionId(comp);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    merged.push(comp);
+  }
 
-  const profileSeed = buildProfileSeed(inputs);
-  return pickWithProfileVariety(
-    eligibleDb,
-    inputs,
-    "relaxed",
-    limit,
-    seen,
-    profileSeed,
-    { isAlternative: true },
-  );
+  return merged;
 }
 
 Deno.serve(async (req) => {
@@ -868,7 +899,7 @@ Deno.serve(async (req) => {
         .filter(Boolean),
     );
 
-    // STEP 1: Curated manual rows first (profile-shuffled), cached web held back for variety
+    // Build eligible pool: upcoming, on-topic, not junk
     const eligibleDb = allCompetitions
       .filter((c) => !isRejectedResult(competitionRecordToSearchResult(c)))
       .map((c) => {
@@ -879,67 +910,51 @@ Deno.serve(async (req) => {
       })
       .filter((c) => !isCompetitionResultsPage(c) && isCompetitionUpcoming(c));
 
-    const manualEligible = eligibleDb.filter((c) => String(c.source ?? "manual") !== "web");
-    const cachedWebEligible = eligibleDb.filter((c) => String(c.source) === "web");
+    const serperKey = Deno.env.get("SERPER_API_KEY") ?? "";
+    const geminiKey = Deno.env.get("GEMINI_API_KEY") ?? "";
+    const dbSlotTarget = serperKey ? TARGET_DB_SLOTS : TARGET_RESULTS;
+    const dbResults = fillDatabaseResults(eligibleDb, inputs, dbSlotTarget);
 
     const imageAllocator = new ImageAllocator();
-    let combinedDb = fillFromCuratedDatabase(manualEligible, inputs);
-    const seenIds = new Set(combinedDb.map((comp) => getCompetitionId(comp)));
-
-    const serperKey = Deno.env.get("SERPER_API_KEY") ?? "";
-    const targetWebSlots = serperKey
-      ? (combinedDb.length < 3 ? TARGET_RESULTS : Math.max(1, Math.ceil(TARGET_RESULTS / 2)))
-      : Math.max(0, TARGET_RESULTS - combinedDb.length);
-
-    // STEP 2: Refresh from web search for profile-specific variety when Serper is available
     let webResults: Record<string, unknown>[] = [];
     let searchHits = 0;
     let serperQueries = 0;
     let newWebCount = 0;
     let webErrors: string[] = [];
     let webSearchUsed = false;
+    let geminiFilterUsed = Boolean(geminiKey);
 
-    if (serperKey && targetWebSlots > 0) {
+    if (serperKey) {
       webSearchUsed = true;
       const webDiscovery = await discoverFromWeb(
         supabase,
         inputs,
         userTopics,
         existingLinks,
-        targetWebSlots,
+        TARGET_WEB_SLOTS,
       );
-      webResults = webDiscovery.imported
-        .filter((comp) => !isRejectedCompetitionRecord(comp))
-        .filter((comp) => {
-          const id = getCompetitionId(comp);
-          if (seenIds.has(id)) return false;
-          seenIds.add(id);
-          return true;
-        });
+      webResults = webDiscovery.imported.filter(
+        (comp) => !isRejectedCompetitionRecord(comp, userTopics, inputs.otherText),
+      );
       searchHits = webDiscovery.searchHits;
       serperQueries = webDiscovery.serperQueries;
       newWebCount = webDiscovery.newWebCount;
       webErrors = webDiscovery.errors;
-      combinedDb = [...combinedDb, ...webResults];
+      geminiFilterUsed = geminiFilterUsed || webDiscovery.geminiFilterUsed;
     }
 
-    // STEP 3: Fill gaps from cached web imports (profile-shuffled, not the same set every time)
-    const cachedFill = fillFromCachedWeb(
-      cachedWebEligible,
-      inputs,
-      seenIds,
-      TARGET_RESULTS - combinedDb.length,
-    );
-    combinedDb = [...combinedDb, ...cachedFill];
+    let combinedDb = mergeResultsWebFirst(webResults, dbResults, TARGET_RESULTS);
+    const seenIds = new Set(combinedDb.map((comp) => getCompetitionId(comp)));
 
     if (combinedDb.length < TARGET_RESULTS) {
-      const broadFill = fillFromBroadDatabase(
-        eligibleDb,
+      const topUp = fillDatabaseResults(
+        eligibleDb.filter((c) => !seenIds.has(getCompetitionId(c))),
         inputs,
-        seenIds,
         TARGET_RESULTS - combinedDb.length,
       );
-      combinedDb = [...combinedDb, ...broadFill];
+      const webPart = combinedDb.filter((c) => c._fromDatabase === false);
+      const dbPart = combinedDb.filter((c) => c._fromDatabase === true);
+      combinedDb = mergeResultsWebFirst(webPart, [...dbPart, ...topUp], TARGET_RESULTS);
     }
 
     const strictCount = combinedDb.filter((c) => !c._isAlternative).length;
@@ -949,7 +964,7 @@ Deno.serve(async (req) => {
       combinedDb
         .slice(0, MAX_RESULTS)
         .map((comp) => assignCompetitionImage(comp, imageAllocator)),
-    ).filter((comp) => !isRejectedCompetitionRecord(comp));
+    ).filter((comp) => !isRejectedCompetitionRecord(comp, userTopics, inputs.otherText));
 
     const dbCount = competitions.filter((c) => c._fromDatabase === true).length;
     const webCount = competitions.filter((c) => c._isNewWeb === true).length;
@@ -972,22 +987,22 @@ Deno.serve(async (req) => {
       bannerParts.push(`${alternativeCount} similar alternative${alternativeCount === 1 ? "" : "s"} included.`);
     }
 
-    if (!webSearchUsed && dbCount >= DB_PREFERRED_COUNT) {
-      bannerParts.push(`All from our database — no web search (add SERPER_API_KEY for fresher results).`);
-    } else if (webSearchUsed && newWebCount > 0) {
-      bannerParts.push(
-        `${dbCount} from database, ${newWebCount} newly saved online (${serperQueries} Serper ${serperQueries === 1 ? "query" : "queries"}). Results vary by profile.`,
-      );
-    } else if (webSearchUsed && webResults.length > 0) {
-      bannerParts.push(
-        `${webResults.length} refreshed from web search (${serperQueries} Serper ${serperQueries === 1 ? "query" : "queries"}) — profile-specific picks.`,
-      );
-    } else if (webSearchUsed && searchHits === 0) {
-      bannerParts.push(`Web search returned no results.`);
-    } else if (webSearchUsed && competitions.length === 0) {
-      bannerParts.push(`No upcoming matches in our database or web search for this profile.`);
+    if (!webSearchUsed) {
+      bannerParts.push(`${dbCount} from database${eligibleDb.length > dbCount ? ` (picked ${dbCount} of ${eligibleDb.length} matches)` : ""}.`);
+      if (!serperKey) {
+        bannerParts.push("Add SERPER_API_KEY for 3 fresh web results on top.");
+      }
+    } else {
+      bannerParts.push(`${Math.min(webResults.length, TARGET_WEB_SLOTS)} web + ${dbCount} database (7+3 mix, ${serperQueries} Serper credit${serperQueries === 1 ? "" : "s"}).`);
+      if (newWebCount > 0) {
+        bannerParts.push(`${newWebCount} newly saved for next time.`);
+      }
+    }
+
+    if (geminiFilterUsed) {
+      bannerParts.push("Gemini AI filtered web results.");
     } else if (webSearchUsed) {
-      bannerParts.push(`${searchHits} web hits reviewed — showing best topic matches from database and search.`);
+      bannerParts.push("Rule-based filters only — add GEMINI_API_KEY for smarter web filtering.");
     }
 
     if (inferredTopics.length) {
@@ -1013,6 +1028,7 @@ Deno.serve(async (req) => {
       newWebCount,
       webSearchHits: searchHits,
       serperQueries,
+      geminiFilterUsed,
       webErrors,
       banner: bannerParts.join(" "),
       sourceCounts: {
