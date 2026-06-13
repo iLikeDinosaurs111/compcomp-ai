@@ -558,6 +558,56 @@ export function topicExplicitlyConflictsWithSearch(
   return true;
 }
 
+const RELATED_TOPICS: Record<string, string[]> = {
+  Mathematics: ["Science", "Technology", "Finance"],
+  Science: ["Mathematics", "Technology"],
+  Technology: ["Science", "Mathematics"],
+  Finance: ["Mathematics"],
+  Arts: [],
+};
+
+export function passesSuggestedRelevanceGate(
+  competition: Record<string, unknown>,
+  inputs: FormInputs,
+  userTopics: string[] = getUserSearchTopics(inputs),
+): boolean {
+  const searchTopics = userTopics.filter((t) => t !== "Other");
+
+  if (userTopics.includes("Other") && inputs.otherText) {
+    return competitionMatchesOtherText(competition, inputs.otherText);
+  }
+
+  if (!searchTopics.length) return true;
+
+  const searchText = getCompetitionSearchText(competition);
+  const matched = getMatchedTopicsForCompetition(competition, searchTopics, inputs.otherText);
+
+  if (matched.some((t) => searchTopics.includes(t))) return true;
+
+  if (topicExplicitlyConflictsWithSearch(competition, userTopics)) return false;
+
+  for (const userTopic of searchTopics) {
+    if (topicConflictsWithNegativeSignals(userTopic, searchText)) continue;
+
+    for (const related of RELATED_TOPICS[userTopic] ?? []) {
+      if (!competitionMatchesTopic(competition, related, inputs.otherText)) continue;
+      const keywords = (INTEREST_TOPICS[userTopic] ?? []).filter((kw) => kw.length >= 5);
+      if (keywords.some((kw) => textMatchesKeyword(searchText, kw))) return true;
+    }
+  }
+
+  const hasProfileSignal =
+    (inputs.location && locationMatchesUser(competition, inputs.location, inputs.format)) ||
+    (inputs.format && scoreFormat(competition, inputs.format) > 0) ||
+    (inputs.grade && scoreGrade(competition, inputs.grade) > 0);
+
+  if (hasProfileSignal && searchTopics.some((t) => competitionMatchesTopic(competition, t, inputs.otherText))) {
+    return true;
+  }
+
+  return false;
+}
+
 export function getMatchedTopicsForCompetition(
   competition: Record<string, unknown>,
   topics: string[],
@@ -898,39 +948,52 @@ export function selectTopCompetitions(scored: ScoredCompetition[]): Record<strin
   return top;
 }
 
-/** Rank leftovers for the "may not be what you're looking for" section (no topic match required). */
+/** Rank related leftovers for the "may not be what you're looking for" section. */
 export function pickSuggestedCompetitions(
   pool: Record<string, unknown>[],
   inputs: FormInputs,
   excludeIds: Set<string>,
-  limit = MAX_SUGGESTED_RESULTS,
+  limit = 0,
 ): Record<string, unknown>[] {
   const userTopics = getUserSearchTopics(inputs);
-  const searchTopics = inputs.selectedTopics.includes("Other")
-    ? [...userTopics, "Other"]
-    : userTopics;
+  const byId = new Map<string, { competition: Record<string, unknown>; score: number }>();
 
-  const scored: { competition: Record<string, unknown>; score: number }[] = [];
+  const ingestRanked = (ranked: ScoredCompetition[], bonus: number) => {
+    for (const { competition, score } of ranked) {
+      const id = getCompetitionId(competition);
+      if (excludeIds.has(id)) continue;
+      if (!passesSuggestedRelevanceGate(competition, inputs, userTopics)) continue;
+
+      const prev = byId.get(id);
+      byId.set(id, {
+        competition: {
+          ...competition,
+          _isSuggested: true,
+          _matchedTopics: getMatchedTopicsForCompetition(competition, userTopics, inputs.otherText),
+        },
+        score: Math.max(prev?.score ?? 0, score + bonus),
+      });
+    }
+  };
+
+  ingestRanked(rankCompetitions(pool, inputs, "relaxed"), 0.12);
+  ingestRanked(rankCompetitions(pool, inputs, "fallback"), 0.06);
 
   for (const competition of pool) {
     const id = getCompetitionId(competition);
-    if (excludeIds.has(id)) continue;
+    if (excludeIds.has(id) || byId.has(id)) continue;
+    if (!passesSuggestedRelevanceGate(competition, inputs, userTopics)) continue;
 
-    const matched = getMatchedTopicsForCompetition(competition, searchTopics, inputs.otherText);
-    const topicHits = matched.filter((t) => t !== "Other").length;
-    const canonical = getCanonicalTopicFromField(competition);
-    const onTopic = topicHits > 0 && !topicExplicitlyConflictsWithSearch(competition, userTopics);
-
-    let score = 0.35;
-    if (!onTopic) score += 0.25;
-    if (canonical && userTopics.some((t) => t !== "Other" && t !== canonical)) score += 0.15;
-    if (String(competition.source ?? "manual") === "manual") score += 0.1;
-    if (getCompetitionField(competition, ["time", "date", "deadline"])) score += 0.08;
+    const matched = getMatchedTopicsForCompetition(competition, userTopics, inputs.otherText);
+    let score = 0.25;
+    if (matched.some((t) => userTopics.includes(t) && t !== "Other")) score += 0.4;
     if (inputs.location && locationMatchesUser(competition, inputs.location, inputs.format)) {
-      score += 0.12;
+      score += 0.15;
     }
+    if (inputs.format && scoreFormat(competition, inputs.format) > 0) score += 0.1;
+    if (String(competition.source ?? "manual") === "manual") score += 0.05;
 
-    scored.push({
+    byId.set(id, {
       competition: {
         ...competition,
         _isSuggested: true,
@@ -940,19 +1003,11 @@ export function pickSuggestedCompetitions(
     });
   }
 
-  scored.sort((a, b) => b.score - a.score);
+  const picked = [...byId.values()]
+    .sort((a, b) => b.score - a.score)
+    .map((item) => item.competition);
 
-  const seen = new Set<string>();
-  const picked: Record<string, unknown>[] = [];
-  for (const item of scored) {
-    const id = getCompetitionId(item.competition);
-    if (seen.has(id)) continue;
-    seen.add(id);
-    picked.push(item.competition);
-    if (limit > 0 && picked.length >= limit) break;
-  }
-
-  return picked;
+  return limit > 0 ? picked.slice(0, limit) : picked;
 }
 
 export function inferTopicFromText(text: string): string | null {

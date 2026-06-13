@@ -22,6 +22,7 @@ import {
   topicExplicitlyConflictsWithSearch,
   competitionMatchesTopic,
   pickSuggestedCompetitions,
+  passesSuggestedRelevanceGate,
 } from "../_shared/matching.ts";
 import {
   inferTimeLabel,
@@ -32,7 +33,7 @@ import {
   refreshCompetitionSchedule,
   toCompetitionDbRow,
 } from "../_shared/dates.ts";
-import { ImageAllocator } from "../_shared/images.ts";
+import { ImageAllocator, resolveCompetitionImage } from "../_shared/images.ts";
 import { filterCompetitionsWithGemini } from "../_shared/gemini-filter.ts";
 import {
   checkGeminiQuota,
@@ -485,14 +486,11 @@ function isSafeImageUrl(imageUrl: string, pageUrl: string): boolean {
 
 function assignCompetitionImage(
   comp: Record<string, unknown>,
-  allocator: ImageAllocator,
+  _allocator: ImageAllocator,
 ): Record<string, unknown> {
-  const name = String(comp.name ?? comp.title ?? "Competition");
-  const topic = String(comp.topic ?? "Science");
   const link = String(comp.link ?? comp.url ?? "");
-  const existing = String(comp.image ?? "").trim();
-  const favicon = link ? faviconForUrl(link) : "";
-  const image = allocator.assign(existing || favicon, name, topic, link);
+  const existing = String(comp.image ?? comp.image_url ?? "").trim();
+  const image = resolveCompetitionImage(existing, link);
   return { ...comp, image };
 }
 
@@ -842,6 +840,7 @@ async function discoverFromWeb(
       false,
     );
     if (!competition) continue;
+    if (!passesSuggestedRelevanceGate(competition, inputs, userTopics)) continue;
 
     suggestedWeb.push({
       ...competition,
@@ -1150,13 +1149,16 @@ Deno.serve(async (req) => {
     );
 
     const extraWebSuggested = webSuggested.filter(
-      (comp) => !primaryIds.has(getCompetitionId(comp)),
+      (comp) =>
+        !primaryIds.has(getCompetitionId(comp)) &&
+        passesSuggestedRelevanceGate(comp, inputs, userTopics),
     );
     suggestedCompetitions = dedupeCompetitionResults([
       ...suggestedCompetitions,
       ...extraWebSuggested,
     ])
       .filter((comp) => !primaryIds.has(getCompetitionId(comp)))
+      .filter((comp) => passesSuggestedRelevanceGate(comp, inputs, userTopics))
       .map((comp) => assignCompetitionImage(comp, imageAllocator));
 
     const dbCount = competitions.filter((c) => c._fromDatabase === true).length;
@@ -1176,7 +1178,7 @@ Deno.serve(async (req) => {
 
     if (suggestedCount) {
       bannerParts.push(
-        `${suggestedCount} more below may not match exactly (database & leftover web — no extra credits).`,
+        `${suggestedCount} related option${suggestedCount === 1 ? "" : "s"} below — close to your search but not top picks.`,
       );
     }
 
