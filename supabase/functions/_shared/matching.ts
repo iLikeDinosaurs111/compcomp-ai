@@ -465,9 +465,9 @@ function parseAgeNumber(value: string): number | null {
 
 function parseAgeRange(text: string): { min: number; max: number } | null {
   const normalized = normalizeInterestText(text);
-  const rangeMatch = normalized.match(/(\d+)\s*(?:to|-)\s*(\d+)/);
+  const rangeMatch = normalized.match(/(?:ages?\s*)?(\d{1,2})\s*(?:to|through|-)\s*(\d{1,2})/);
   if (rangeMatch) return { min: parseInt(rangeMatch[1], 10), max: parseInt(rangeMatch[2], 10) };
-  const plusMatch = normalized.match(/(?:ages?\s*)?(\d+)\s*\+/);
+  const plusMatch = normalized.match(/(?:ages?\s*)?(\d{1,2})\s*\+/);
   if (plusMatch) return { min: parseInt(plusMatch[1], 10), max: 99 };
   const single = normalized.match(/\b(\d{1,2})\b/);
   if (single) {
@@ -475,6 +475,42 @@ function parseAgeRange(text: string): { min: number; max: number } | null {
     return { min: n, max: n };
   }
   return null;
+}
+
+export function inferAgeLabel(...sources: string[]): string {
+  for (const text of sources) {
+    if (!text.trim()) continue;
+    const range = parseAgeRange(text);
+    if (range) {
+      if (range.max >= 99) return `Ages ${range.min}+`;
+      if (range.min === range.max) return `Ages ${range.min}`;
+      return `Ages ${range.min}-${range.max}`;
+    }
+    const normalized = text.toLowerCase();
+    if (/\bhigh school\b/.test(normalized)) return "High school";
+    if (/\bmiddle school\b/.test(normalized)) return "Middle school";
+    if (/\belementary\b/.test(normalized)) return "Elementary";
+    if (/\b(college|university)\b/.test(normalized) && /\bstudents?\b/.test(normalized)) {
+      return "College";
+    }
+    if (/\bstudents?\ only\b/.test(normalized)) return "Students";
+  }
+  return "High school";
+}
+
+export function inferGradeLabel(...sources: string[]): string {
+  for (const text of sources) {
+    if (!text.trim()) continue;
+    const range = parseGradeRange(text);
+    if (range) {
+      if (range.min === range.max) return `Grade ${range.min}`;
+      return `Grades ${range.min}-${range.max}`;
+    }
+    const normalized = text.toLowerCase();
+    if (/\bhigh school\b/.test(normalized)) return "Grades 9-12";
+    if (/\bmiddle school\b/.test(normalized)) return "Grades 6-8";
+  }
+  return "";
 }
 
 function scoreAge(competition: Record<string, unknown>, userAge: string): number {
@@ -969,7 +1005,9 @@ export function refreshWebRowMetadata(comp: Record<string, unknown>): Record<str
 
   return {
     ...comp,
-    location: inferCompetitionLocation(name, details, link),
+    location: String(comp.location ?? "").trim() || inferCompetitionLocation(name, details, link),
+    age: String(comp.age ?? "").trim() || inferAgeLabel(name, details),
+    grade: String(comp.grade ?? "").trim() || inferGradeLabel(name, details),
   };
 }
 

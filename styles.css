@@ -69,6 +69,24 @@ body {
   font-size: 4.5rem;
   line-height: 1;
   flex-shrink: 0;
+  display: inline-block;
+  animation: hero-compass-spin 12s linear infinite;
+}
+
+@keyframes hero-compass-spin {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero__logo {
+    animation: none;
+  }
 }
 
 .hero__title {

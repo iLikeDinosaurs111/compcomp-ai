@@ -887,6 +887,135 @@ function renderCompetitionLink(competition) {
   `;
 }
 
+function formatAgeLabel(age) {
+  const value = String(age).trim();
+  if (!value) {
+    return "High school";
+  }
+
+  if (/^ages?\s/i.test(value)) {
+    return value;
+  }
+
+  if (/high school|middle school|elementary|students?/i.test(value)) {
+    return value.charAt(0).toUpperCase() + value.slice(1);
+  }
+
+  const rangeMatch = value.match(/(\d{1,2})\s*(?:to|-)\s*(\d{1,2})/);
+  if (rangeMatch) {
+    return `Ages ${rangeMatch[1]}-${rangeMatch[2]}`;
+  }
+
+  if (/^\d{1,2}\+$/.test(value)) {
+    return `Ages ${value}`;
+  }
+
+  if (/^\d{1,2}$/.test(value)) {
+    return `Ages ${value}`;
+  }
+
+  return value;
+}
+
+function inferAgeFromText(text) {
+  const normalized = String(text).toLowerCase();
+  const rangeMatch = normalized.match(/ages?\s*(\d{1,2})\s*(?:to|through|-)\s*(\d{1,2})/);
+  if (rangeMatch) {
+    return `Ages ${rangeMatch[1]}-${rangeMatch[2]}`;
+  }
+
+  const plusMatch = normalized.match(/ages?\s*(\d{1,2})\s*\+/);
+  if (plusMatch) {
+    return `Ages ${plusMatch[1]}+`;
+  }
+
+  if (/\bhigh school\b/.test(normalized)) {
+    return "High school";
+  }
+
+  if (/\bmiddle school\b/.test(normalized)) {
+    return "Middle school";
+  }
+
+  if (/\bstudents?\ only\b/.test(normalized)) {
+    return "Students";
+  }
+
+  return "";
+}
+
+function inferLocationFromText(text, format = "") {
+  const normalized = String(text).toLowerCase();
+  if (/online|virtual|remote|devpost|nationwide|national|international|global/.test(normalized)) {
+    if (/online|virtual|remote|devpost/.test(normalized) || /online/i.test(format)) {
+      return "Online";
+    }
+    return "National";
+  }
+  return "";
+}
+
+function resolveCardAge(competition) {
+  const fromField = getCompetitionField(competition, [
+    "age",
+    "ages",
+    "age_range",
+    "min_age",
+    "max_age",
+    "eligible_ages",
+  ]);
+  if (fromField) {
+    return formatAgeLabel(fromField);
+  }
+
+  const text = [
+    getCompetitionField(competition, ["name", "title", "competition_name"]),
+    getCompetitionField(competition, ["description", "details", "summary", "about"]),
+  ].join(" ");
+  const inferred = inferAgeFromText(text);
+  if (inferred) {
+    return inferred;
+  }
+
+  const grade = getCompetitionField(competition, ["grade", "grades", "grade_level", "grade_range"]);
+  if (grade) {
+    return formatGradeLabel(grade);
+  }
+
+  return "High school";
+}
+
+function resolveCardLocation(competition) {
+  const fromField = getCompetitionField(competition, [
+    "location",
+    "city",
+    "region",
+    "state",
+    "address",
+    "town",
+  ]);
+  if (fromField) {
+    return fromField;
+  }
+
+  const format = getCompetitionField(competition, ["format", "delivery", "mode"]);
+  const text = [
+    getCompetitionField(competition, ["name", "title", "competition_name"]),
+    getCompetitionField(competition, ["description", "details", "summary", "about"]),
+    getCompetitionField(competition, ["link", "url"]),
+  ].join(" ");
+  const inferred = inferLocationFromText(text, format);
+  if (inferred) {
+    return inferred;
+  }
+
+  if (/online/i.test(format)) {
+    return "Online";
+  }
+
+  return "National";
+}
+
 function formatGradeLabel(grade) {
   const value = String(grade).trim();
   if (!value) {
@@ -945,11 +1074,8 @@ function renderCompetitionCard(competition) {
     "summary",
     "about",
   ]);
-  const location = getCompetitionField(competition, [
-    "location",
-    "city",
-    "region",
-  ]);
+  const location = resolveCardLocation(competition);
+  const age = resolveCardAge(competition);
   const grade = getCompetitionField(competition, [
     "grade",
     "grades",
@@ -973,10 +1099,11 @@ function renderCompetitionCard(competition) {
         ${isSuggested ? `<span class="comp-card__tag comp-card__tag--suggested">May not match</span>` : ""}
         ${isAlternative ? `<span class="comp-card__tag comp-card__tag--alt">Similar match</span>` : ""}
         ${displayTopic ? `<span class="comp-card__tag comp-card__tag--topic">${escapeHtml(displayTopic)}</span>` : ""}
+        <span class="comp-card__tag comp-card__tag--age">${escapeHtml(age)}</span>
         ${grade ? `<span class="comp-card__tag comp-card__tag--grade">${escapeHtml(formatGradeLabel(grade))}</span>` : ""}
         ${format ? `<span class="comp-card__tag comp-card__tag--format">${escapeHtml(formatFormatLabel(format))}</span>` : ""}
         ${schedule ? `<span class="comp-card__tag comp-card__tag--time">${escapeHtml(schedule)}</span>` : ""}
-        ${location ? `<span class="comp-card__tag comp-card__tag--location">${escapeHtml(location)}</span>` : ""}
+        <span class="comp-card__tag comp-card__tag--location">${escapeHtml(location)}</span>
       </div>
       <p class="comp-card__body">${escapeHtml(description || "Details coming soon.")}</p>
       ${renderCompetitionLink(competition)}
