@@ -13,6 +13,7 @@ import {
   rankCompetitions,
   textMatchesKeyword,
   dedupeCompetitionRows,
+  dedupeCompetitionResults,
   buildProfileSeed,
   sortScoredWithProfileVariety,
   inferCompetitionLocation,
@@ -21,6 +22,7 @@ import {
 import {
   inferTimeLabel,
   isCompetitionUpcoming,
+  isClosedScheduleText,
   toCompetitionDbRow,
 } from "../_shared/dates.ts";
 import { ImageAllocator } from "../_shared/images.ts";
@@ -40,6 +42,8 @@ const SKIP_DOMAINS = [
   "collegexpress.com", "prepscholar.com", "niche.com", "usnews.com",
   "patch.com", "tapinto.net", "nj.com", "courierpostonline.com",
   "northjersey.com", "app.com", "mycentraljersey.com",
+  "varsitytutors.com", "chegg.com", "coursehero.com", "studystack.com",
+  "sparknotes.com", "cliffsnotes.com", "khanacademy.org", "coursera.org",
 ];
 
 const BLOCKED_PATH_PATTERNS = [
@@ -213,6 +217,8 @@ function isRejectedResult(result: SearchResult): boolean {
   const title = result.title.toLowerCase();
   const combined = `${result.title} ${result.snippet}`.toLowerCase();
 
+  if (isClosedScheduleText(combined)) return true;
+
   if (LISTICLE_TITLE_PATTERNS.some((pattern) => pattern.test(combined))) {
     return true;
   }
@@ -250,28 +256,32 @@ function isOfficialCompetitionResult(result: SearchResult): boolean {
   if (isRejectedResult(result)) return false;
 
   const combined = `${result.title} ${result.snippet}`;
-  if (!looksLikeCompetition(combined.toLowerCase())) return false;
+  const combinedLower = combined.toLowerCase();
+  if (!looksLikeCompetition(combinedLower)) return false;
 
-  if (KNOWN_COMPETITION_SIGNALS.some((pattern) => pattern.test(combined))) {
-    return true;
-  }
+  const hasKnownName = KNOWN_COMPETITION_SIGNALS.some((pattern) => pattern.test(combined));
 
   try {
     const parsed = new URL(result.url);
     const host = parsed.hostname.toLowerCase();
     const path = parsed.pathname.toLowerCase();
+    const genericHome = ["/", "/home", "/index.html", "/about", "/contact"].includes(path);
 
-    if (host.endsWith(".gov")) return true;
+    if (genericHome && !hasKnownName) return false;
+
+    if (host.endsWith(".gov") && (hasKnownName || path.includes("competition") || path.includes("contest"))) {
+      return true;
+    }
 
     if (host.endsWith(".org") || host.endsWith(".edu")) {
-      if (
+      const competitionPath =
         path.includes("competition") ||
         path.includes("contest") ||
         path.includes("olympiad") ||
-        path.includes("register")
-      ) {
-        return true;
-      }
+        path.includes("register") ||
+        path.includes("rules");
+      if (competitionPath || hasKnownName) return true;
+      return false;
     }
 
     if (
@@ -287,7 +297,10 @@ function isOfficialCompetitionResult(result: SearchResult): boolean {
     return false;
   }
 
-  return /\b(official|register|registration|eligibility|annual competition)\b/i.test(combined);
+  if (hasKnownName) return true;
+
+  return /\b(official|eligibility|rules and guidelines|annual competition)\b/i.test(combined) &&
+    /\b(register|registration)\b/i.test(combined);
 }
 
 async function filterWithGemini(results: SearchResult[], apiKey: string): Promise<SearchResult[]> {
@@ -522,7 +535,6 @@ async function discoverFromWeb(
   userTopics: string[],
   existingLinks: Set<string>,
   maxDisplay: number,
-  imageAllocator: ImageAllocator,
 ): Promise<{
   imported: Record<string, unknown>[];
   newWebCount: number;
@@ -607,13 +619,14 @@ async function discoverFromWeb(
     );
     if (!competition) continue;
 
-    const withUniqueImage = assignCompetitionImage(competition, imageAllocator);
-
     const isNewLink = !existingAtStart.has(normalizedUrl);
     importedLinks.add(normalizedUrl);
     persisted += 1;
 
-    const dbRow = toCompetitionDbRow(withUniqueImage);
+    const dbRow = toCompetitionDbRow({
+      ...competition,
+      image: imageUrl || faviconForUrl(result.url),
+    });
 
     if (isNewLink) {
       const { error } = await supabase.from("competitions").insert(dbRow);
@@ -639,7 +652,8 @@ async function discoverFromWeb(
 
     if (displayResults.length < maxDisplay) {
       displayResults.push({
-        ...withUniqueImage,
+        ...competition,
+        image: imageUrl || faviconForUrl(result.url),
         _fromDatabase: false,
         _isNewWeb: isNewLink,
       });
@@ -844,7 +858,6 @@ Deno.serve(async (req) => {
         userTopics,
         existingLinks,
         targetWebSlots,
-        imageAllocator,
       );
       webResults = webDiscovery.imported
         .filter((comp) => !isRejectedCompetitionRecord(comp))
@@ -884,10 +897,11 @@ Deno.serve(async (req) => {
     const strictCount = combinedDb.filter((c) => !c._isAlternative).length;
     const alternativeCount = combinedDb.filter((c) => c._isAlternative).length;
 
-    const competitions = combinedDb
-      .slice(0, MAX_RESULTS)
-      .map((comp) => assignCompetitionImage(comp, imageAllocator))
-      .filter((comp) => !isRejectedCompetitionRecord(comp));
+    const competitions = dedupeCompetitionResults(
+      combinedDb
+        .slice(0, MAX_RESULTS)
+        .map((comp) => assignCompetitionImage(comp, imageAllocator)),
+    ).filter((comp) => !isRejectedCompetitionRecord(comp));
 
     const dbCount = competitions.filter((c) => c._fromDatabase === true).length;
     const webCount = competitions.filter((c) => c._isNewWeb === true).length;

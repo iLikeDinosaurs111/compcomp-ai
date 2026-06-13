@@ -725,7 +725,27 @@ export function normalizeCompetitionLink(url: string): string {
   }
 }
 
+export function normalizeCompetitionName(name: string): string {
+  return String(name || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(
+      /\b(the|official|home|page|website|competition|contest|register|registration|national|student|students|high school|annual)\b/g,
+      " ",
+    )
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 export function getCompetitionId(competition: Record<string, unknown>): string {
+  const link = getCompetitionField(competition, ["link", "url", "website"]);
+  if (link) return normalizeCompetitionLink(link);
+
+  const name = normalizeCompetitionName(
+    getCompetitionField(competition, ["name", "title", "competition_name"]),
+  );
+  if (name.length >= 4) return `name:${name}`;
+
   if (competition.id !== undefined && competition.id !== null) {
     return String(competition.id);
   }
@@ -733,10 +753,31 @@ export function getCompetitionId(competition: Record<string, unknown>): string {
     return String(competition.uuid);
   }
 
-  const link = getCompetitionField(competition, ["link", "url", "website"]);
-  if (link) return normalizeCompetitionLink(link);
-
   return getCompetitionField(competition, ["name", "title", "competition_name"]);
+}
+
+export function dedupeCompetitionResults(
+  competitions: Record<string, unknown>[],
+): Record<string, unknown>[] {
+  const seenIds = new Set<string>();
+  const seenNames = new Set<string>();
+  const deduped: Record<string, unknown>[] = [];
+
+  for (const comp of competitions) {
+    const id = getCompetitionId(comp);
+    const nameKey = normalizeCompetitionName(
+      getCompetitionField(comp, ["name", "title", "competition_name"]),
+    );
+
+    if (seenIds.has(id)) continue;
+    if (nameKey.length >= 8 && seenNames.has(nameKey)) continue;
+
+    seenIds.add(id);
+    if (nameKey.length >= 8) seenNames.add(nameKey);
+    deduped.push(comp);
+  }
+
+  return deduped;
 }
 
 export function selectTopCompetitions(scored: ScoredCompetition[]): Record<string, unknown>[] {

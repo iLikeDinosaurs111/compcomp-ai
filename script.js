@@ -560,12 +560,66 @@ function filterByFormat(competitions, format) {
   );
 }
 
+function normalizeCompetitionLink(url) {
+  try {
+    const parsed = new URL(String(url).trim());
+    parsed.hash = "";
+    parsed.search = "";
+    const path = parsed.pathname.replace(/\/+$/, "") || "/";
+    return `${parsed.protocol}//${parsed.hostname.toLowerCase()}${path}`;
+  } catch {
+    return String(url).trim().toLowerCase();
+  }
+}
+
+function normalizeCompetitionName(name) {
+  return String(name || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(
+      /\b(the|official|home|page|website|competition|contest|register|registration|national|student|students|high school|annual)\b/g,
+      " ",
+    )
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function getCompetitionId(competition) {
+  const link = getCompetitionLink(competition);
+  if (link) return normalizeCompetitionLink(link);
+
+  const name = normalizeCompetitionName(
+    getCompetitionField(competition, ["name", "title", "competition_name"]),
+  );
+  if (name.length >= 4) return `name:${name}`;
+
   return String(
     competition.id ??
       competition.uuid ??
-      getCompetitionField(competition, ["name", "title", "competition_name"])
+      getCompetitionField(competition, ["name", "title", "competition_name"]),
   );
+}
+
+function dedupeCompetitionResults(competitions) {
+  const seenIds = new Set();
+  const seenNames = new Set();
+  const deduped = [];
+
+  for (const comp of competitions) {
+    const id = getCompetitionId(comp);
+    const nameKey = normalizeCompetitionName(
+      getCompetitionField(comp, ["name", "title", "competition_name"]),
+    );
+
+    if (seenIds.has(id)) continue;
+    if (nameKey.length >= 8 && seenNames.has(nameKey)) continue;
+
+    seenIds.add(id);
+    if (nameKey.length >= 8) seenNames.add(nameKey);
+    deduped.push(comp);
+  }
+
+  return deduped;
 }
 
 function filterByProfile(competitions, inputs) {
@@ -721,6 +775,18 @@ function isSafeImageUrl(value) {
 }
 
 const usedCardImages = new Set();
+const usedFaviconDomains = new Set();
+
+function faviconDomainFromImageUrl(imageUrl) {
+  try {
+    const parsed = new URL(String(imageUrl).trim());
+    const domainMatch = parsed.search.match(/[?&]domain=([^&]+)/i);
+    if (domainMatch) return decodeURIComponent(domainMatch[1]).toLowerCase();
+    return parsed.hostname.toLowerCase();
+  } catch {
+    return "";
+  }
+}
 
 function generateCompetitionPlaceholder(name, topic, link) {
   const label = String(name || "Competition").trim();
@@ -757,9 +823,13 @@ function getCompetitionImage(competition) {
   ]);
 
   if (isSafeImageUrl(fromField)) {
-    if (!usedCardImages.has(fromField)) {
-      usedCardImages.add(fromField);
-      return fromField;
+    const domain = faviconDomainFromImageUrl(fromField);
+    if (!domain || !usedFaviconDomains.has(domain)) {
+      if (!usedCardImages.has(fromField)) {
+        usedCardImages.add(fromField);
+        if (domain) usedFaviconDomains.add(domain);
+        return fromField;
+      }
     }
   }
 
@@ -780,8 +850,11 @@ function getCompetitionImage(competition) {
   candidates.push(generateCompetitionPlaceholder(name, topic, linkUrl || name));
 
   for (const candidate of candidates) {
+    const domain = faviconDomainFromImageUrl(candidate);
+    if (domain && usedFaviconDomains.has(domain)) continue;
     if (!usedCardImages.has(candidate)) {
       usedCardImages.add(candidate);
+      if (domain) usedFaviconDomains.add(domain);
       return candidate;
     }
   }
@@ -944,7 +1017,9 @@ function renderCompetitionCard(competition) {
 function renderCompetitions(competitions, topics = [], options = {}) {
   competitionsGrid.replaceChildren();
   usedCardImages.clear();
-  const capped = competitions.slice(0, DiscoveryMatching.MAX_RESULTS);
+  usedFaviconDomains.clear();
+  const uniqueCompetitions = dedupeCompetitionResults(competitions);
+  const capped = uniqueCompetitions.slice(0, DiscoveryMatching.MAX_RESULTS);
 
   if (!options.hasExactMatches) {
     competitionsGrid.innerHTML = `

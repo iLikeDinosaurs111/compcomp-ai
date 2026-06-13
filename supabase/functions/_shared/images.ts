@@ -16,6 +16,26 @@ function hashString(value: string): number {
   return hash;
 }
 
+function escapeSvg(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function faviconDomain(url: string): string {
+  try {
+    const parsed = new URL(url);
+    const domainMatch = parsed.search.match(/[?&]domain=([^&]+)/i);
+    if (domainMatch) return decodeURIComponent(domainMatch[1]).toLowerCase();
+    return parsed.hostname.toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
 export function generateCompetitionPlaceholder(
   name: string,
   topic: string,
@@ -44,25 +64,31 @@ export function generateCompetitionPlaceholder(
   return `data:image/svg+xml,${encodeURIComponent(svg)}`;
 }
 
-function escapeSvg(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
 export class ImageAllocator {
   private used = new Set<string>();
+  private usedFaviconDomains = new Set<string>();
 
   assign(primary: string, fallbackName: string, fallbackTopic: string, fallbackLink: string): string {
-    const candidates = [primary, generateCompetitionPlaceholder(fallbackName, fallbackTopic, fallbackLink)]
-      .filter(Boolean);
+    let chosenPrimary = String(primary || "").trim();
+    const domain = faviconDomain(chosenPrimary);
+
+    if (domain && this.usedFaviconDomains.has(domain)) {
+      chosenPrimary = "";
+    }
+
+    const candidates = [
+      chosenPrimary,
+      generateCompetitionPlaceholder(fallbackName, fallbackTopic, fallbackLink),
+    ].filter(Boolean);
 
     for (const candidate of candidates) {
+      const candidateDomain = faviconDomain(candidate);
+      if (candidateDomain && this.usedFaviconDomains.has(candidateDomain)) {
+        continue;
+      }
       if (!this.used.has(candidate)) {
         this.used.add(candidate);
+        if (candidateDomain) this.usedFaviconDomains.add(candidateDomain);
         return candidate;
       }
     }
