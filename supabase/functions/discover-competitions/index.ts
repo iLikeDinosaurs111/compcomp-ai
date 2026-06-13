@@ -13,6 +13,11 @@ import {
   selectTopCompetitions,
   textMatchesKeyword,
 } from "../_shared/matching.ts";
+import {
+  inferTimeLabel,
+  isCompetitionUpcoming,
+  toCompetitionDbRow,
+} from "../_shared/dates.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -455,8 +460,9 @@ function buildCompetitionFromSearchResult(
 
   topic = topic ?? userTopics[0] ?? "Science";
   const format = inputs.format || inferFormatFromText(combinedText) || "online";
+  const time = inferTimeLabel(combinedText);
 
-  return {
+  const competition = {
     name: result.title || "Competition",
     details: result.snippet || "Student competition found online.",
     link: result.url,
@@ -467,8 +473,13 @@ function buildCompetitionFromSearchResult(
     grade: inputs.grade ? `Grades ${inputs.grade}` : "",
     age: inputs.age || "",
     source: "web",
+    ...(time ? { time } : {}),
     _matchedTopics: [topic],
   };
+
+  if (!isCompetitionUpcoming(competition)) return null;
+
+  return competition;
 }
 
 function isUsableSearchResult(result: SearchResult): boolean {
@@ -487,7 +498,8 @@ function competitionRecordToSearchResult(comp: Record<string, unknown>): SearchR
 }
 
 function isRejectedCompetitionRecord(comp: Record<string, unknown>): boolean {
-  return isRejectedResult(competitionRecordToSearchResult(comp));
+  if (isRejectedResult(competitionRecordToSearchResult(comp))) return true;
+  return !isCompetitionUpcoming(comp);
 }
 
 async function discoverFromWeb(
@@ -565,18 +577,28 @@ async function discoverFromWeb(
     importedLinks.add(result.url);
     persisted += 1;
 
+    const dbRow = toCompetitionDbRow(competition);
+
     if (!existingLinks.has(result.url)) {
-      const { error } = await supabase.from("competitions").insert(competition);
+      const { error } = await supabase.from("competitions").insert(dbRow);
       if (error && !String(error.message).toLowerCase().includes("duplicate")) {
         errors.push(error.message);
       } else {
         existingLinks.add(result.url);
       }
     } else {
-      await supabase
+      const { error } = await supabase
         .from("competitions")
-        .update({ image: imageUrl, details: competition.details, name: competition.name })
+        .update({
+          image: dbRow.image,
+          details: dbRow.details,
+          name: dbRow.name,
+          time: dbRow.time,
+          topic: dbRow.topic,
+          format: dbRow.format,
+        })
         .eq("link", result.url);
+      if (error) errors.push(error.message);
     }
 
     if (displayResults.length < maxDisplay) {
@@ -662,8 +684,10 @@ Deno.serve(async (req) => {
       (allCompetitions ?? []).map((c) => String(c.link ?? "").trim()).filter(Boolean),
     );
 
-    // STEP 1: Database first (manual + previously cached web rows)
-    const eligibleDb = (allCompetitions ?? []).filter((c) => !isRejectedCompetitionRecord(c));
+    // STEP 1: Database first (manual + cached web), upcoming only
+    const eligibleDb = (allCompetitions ?? []).filter(
+      (c) => !isRejectedResult(competitionRecordToSearchResult(c)) && isCompetitionUpcoming(c),
+    );
     const rankedDb = selectTopCompetitions(rankCompetitions(eligibleDb, inputs));
     const dbResults = rankedDb.slice(0, TARGET_RESULTS);
     const needFromWeb = Math.max(0, TARGET_RESULTS - dbResults.length);
@@ -726,7 +750,11 @@ Deno.serve(async (req) => {
     }
 
     if (competitions.length < TARGET_RESULTS) {
-      bannerParts.push(`Only ${competitions.length} total matches — try broadening location or topics.`);
+      bannerParts.push(`Only ${competitions.length} upcoming matches — try broadening location or topics.`);
+    }
+
+    if (webErrors.length) {
+      bannerParts.push(`${webErrors.length} save warning${webErrors.length === 1 ? "" : "s"} — check Edge Function logs.`);
     }
 
     return jsonResponse({

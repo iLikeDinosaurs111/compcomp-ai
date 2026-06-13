@@ -861,6 +861,7 @@ function renderCompetitionCard(competition) {
     "grade_range",
   ]);
   const format = getCompetitionField(competition, ["format", "delivery", "mode"]);
+  const schedule = getCompetitionField(competition, ["time", "date", "deadline"]);
   const displayTopic = getDisplayTopic(competition);
   const source = getCompetitionField(competition, ["source"]);
   const isWebSource = source === "web";
@@ -874,6 +875,7 @@ function renderCompetitionCard(competition) {
         ${displayTopic ? `<span class="comp-card__tag comp-card__tag--topic">${escapeHtml(displayTopic)}</span>` : ""}
         ${grade ? `<span class="comp-card__tag comp-card__tag--grade">${escapeHtml(formatGradeLabel(grade))}</span>` : ""}
         ${format ? `<span class="comp-card__tag comp-card__tag--format">${escapeHtml(formatFormatLabel(format))}</span>` : ""}
+        ${schedule ? `<span class="comp-card__tag comp-card__tag--time">${escapeHtml(schedule)}</span>` : ""}
         ${location ? `<span class="comp-card__tag comp-card__tag--location">${escapeHtml(location)}</span>` : ""}
       </div>
       <p class="comp-card__body">${escapeHtml(description || "Details coming soon.")}</p>

@@ -493,9 +493,54 @@ const DiscoveryMatching = (() => {
     return scored;
   }
 
+  function isCompetitionUpcoming(competition) {
+    const months = {
+      january: 0, jan: 0, february: 1, feb: 1, march: 2, mar: 2, april: 3, apr: 3,
+      may: 4, june: 5, jun: 5, july: 6, jul: 6, august: 7, aug: 7, september: 8,
+      sep: 8, sept: 8, october: 9, oct: 9, november: 10, nov: 10, december: 11, dec: 11,
+    };
+    const scheduleText = [
+      getCompetitionField(competition, ["time", "date", "deadline"]),
+      getCompetitionField(competition, ["details", "description", "summary", "about"]),
+      getCompetitionField(competition, ["name", "title"]),
+    ].join(" ");
+
+    if (!scheduleText.trim()) return true;
+    if (/\b(was held|took place|registration closed|deadline passed|winners announced|students? won)\b/i.test(scheduleText)) {
+      return false;
+    }
+
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const yearMatches = [...scheduleText.matchAll(/\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\.?\s+(\d{4})\b/gi)];
+
+    for (const match of yearMatches) {
+      const month = months[match[1].toLowerCase().replace(/\./g, "")];
+      const year = Number(match[2]);
+      if (month !== undefined) {
+        const date = new Date(year, month, 1);
+        if (date >= today) return true;
+        if (date < today) return false;
+      }
+    }
+
+    const timeField = getCompetitionField(competition, ["time", "date", "deadline"]);
+    const monthMatch = timeField.match(/\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\.?\b/i);
+    if (monthMatch) {
+      const month = months[monthMatch[1].toLowerCase().replace(/\./g, "")];
+      if (month !== undefined) {
+        const year = now.getMonth() > month ? now.getFullYear() + 1 : now.getFullYear();
+        return new Date(year, month, 1) >= today;
+      }
+    }
+
+    return true;
+  }
+
   function discoverLocally(competitions, inputs) {
     const { topics, inferredTopics } = inferTopicsFromInputs(inputs);
-    const scored = rankCompetitions(competitions, inputs);
+    const scored = rankCompetitions(competitions, inputs)
+      .filter((entry) => isCompetitionUpcoming(entry.competition));
     const matched = scored.slice(0, MAX_RESULTS).map((s) => s.competition);
 
     const displayTopics = inputs.selectedTopics.filter((t) => t !== "Other").length
