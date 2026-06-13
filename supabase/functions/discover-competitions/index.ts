@@ -30,10 +30,7 @@ import {
   toCompetitionDbRow,
 } from "../_shared/dates.ts";
 import { ImageAllocator } from "../_shared/images.ts";
-import {
-  filterCompetitionsWithGemini,
-  filterSearchResultsWithGemini,
-} from "../_shared/gemini-filter.ts";
+import { filterCompetitionsWithGemini } from "../_shared/gemini-filter.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -732,27 +729,11 @@ async function discoverFromWeb(
     if (goodCount >= maxDisplay) break;
   }
 
-  let rankedResults = [...allSearchResults]
-    .filter((r) => !isRejectedResult(r));
-
-  const geminiKey = Deno.env.get("GEMINI_API_KEY") ?? "";
-  if (geminiKey && rankedResults.length) {
-    const gemini = await filterSearchResultsWithGemini(rankedResults, geminiKey, userTopics);
-    if (gemini.applied) {
-      rankedResults = gemini.items.filter((r) => !isRejectedResult(r));
-      geminiFilterUsed = true;
-    } else {
-      if (gemini.note) {
-        geminiNote = gemini.note;
-        errors.push(gemini.note);
-      }
-      rankedResults = rankedResults.filter((r) => passesStrictCompetitionGate(r));
-    }
-  } else {
-    rankedResults = rankedResults.filter(isOfficialCompetitionResult);
-  }
-
-  rankedResults = rankedResults.sort((a, b) => scoreSearchResult(b) - scoreSearchResult(a));
+  // Rule filters only for web — one Gemini call runs on the final merged list (avoids 429 rate limits).
+  const rankedResults = [...allSearchResults]
+    .filter((r) => !isRejectedResult(r))
+    .filter(isOfficialCompetitionResult)
+    .sort((a, b) => scoreSearchResult(b) - scoreSearchResult(a));
 
   const displayResults: Record<string, unknown>[] = [];
   const importedLinks = new Set<string>();
@@ -1090,6 +1071,8 @@ Deno.serve(async (req) => {
 
     if (geminiFilterUsed) {
       bannerParts.push("Gemini AI verified results — listicles, threads, and outdated events removed.");
+    } else if (geminiKey && geminiNote.includes("429")) {
+      bannerParts.push("Gemini rate limit hit — using rule filters. Wait ~60 seconds before searching again.");
     } else if (geminiKey) {
       bannerParts.push("Gemini could not verify results — showing strict rule-filtered matches only.");
     } else {

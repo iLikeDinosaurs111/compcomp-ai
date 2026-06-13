@@ -59,68 +59,102 @@ ${numbered}
 Respond with JSON only: {"keep":[0,2]} using the index numbers shown above, or {"keep":[]} if none qualify.`;
 }
 
+const GEMINI_MODEL = Deno.env.get("GEMINI_MODEL") ?? "gemini-2.0-flash-lite";
+const MAX_GEMINI_ATTEMPTS = 3;
+const RETRY_DELAYS_MS = [0, 1500, 4000];
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function geminiErrorNote(status: number, errText: string): string {
+  if (status === 429) {
+    return "Gemini rate limit (429) — wait ~60s and search again, or enable billing in Google AI Studio for higher limits.";
+  }
+  if (errText.includes("API key")) {
+    return `Gemini API error (${status}). Check GEMINI_API_KEY.`;
+  }
+  return `Gemini API error (${status}).`;
+}
+
 async function callGeminiKeepIndices(
   prompt: string,
   apiKey: string,
   batchSize: number,
 ): Promise<{ keep: Set<number>; applied: boolean; note: string }> {
-  try {
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${encodeURIComponent(apiKey)}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: {
-            temperature: 0,
-            maxOutputTokens: 512,
-            responseMimeType: "application/json",
-            responseSchema: {
-              type: "object",
-              properties: {
-                keep: {
-                  type: "array",
-                  items: { type: "integer" },
-                },
-              },
-              required: ["keep"],
-            },
-          },
-        }),
-      },
-    );
+  let lastNote = "";
 
-    if (!response.ok) {
-      const errText = await response.text().catch(() => "");
-      return {
-        keep: new Set<number>(),
-        applied: false,
-        note: `Gemini API error (${response.status}).${errText.includes("API key") ? " Check GEMINI_API_KEY." : ""}`,
-      };
+  for (let attempt = 0; attempt < MAX_GEMINI_ATTEMPTS; attempt += 1) {
+    if (attempt > 0) {
+      await sleep(RETRY_DELAYS_MS[attempt] ?? 4000);
     }
 
-    const data = await response.json();
-    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
-    let parsed: { keep?: number[] } = {};
     try {
-      parsed = JSON.parse(text);
-    } catch {
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
-      if (jsonMatch) parsed = JSON.parse(jsonMatch[0]);
-    }
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(apiKey)}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: {
+              temperature: 0,
+              maxOutputTokens: 256,
+              responseMimeType: "application/json",
+              responseSchema: {
+                type: "object",
+                properties: {
+                  keep: {
+                    type: "array",
+                    items: { type: "integer" },
+                  },
+                },
+                required: ["keep"],
+              },
+            },
+          }),
+        },
+      );
 
-    const keep = new Set(
-      (parsed.keep ?? []).filter((n) => Number.isInteger(n) && n >= 0 && n < batchSize),
-    );
-    return { keep, applied: true, note: "" };
-  } catch (error) {
-    return {
-      keep: new Set<number>(),
-      applied: false,
-      note: `Gemini failed: ${error instanceof Error ? error.message : "unknown error"}`,
-    };
+      if (response.status === 429 && attempt < MAX_GEMINI_ATTEMPTS - 1) {
+        lastNote = geminiErrorNote(429, "");
+        continue;
+      }
+
+      if (!response.ok) {
+        const errText = await response.text().catch(() => "");
+        return {
+          keep: new Set<number>(),
+          applied: false,
+          note: geminiErrorNote(response.status, errText),
+        };
+      }
+
+      const data = await response.json();
+      const text = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+      let parsed: { keep?: number[] } = {};
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        const jsonMatch = text.match(/\{[\s\S]*\}/);
+        if (jsonMatch) parsed = JSON.parse(jsonMatch[0]);
+      }
+
+      const keep = new Set(
+        (parsed.keep ?? []).filter((n) => Number.isInteger(n) && n >= 0 && n < batchSize),
+      );
+      return { keep, applied: true, note: "" };
+    } catch (error) {
+      lastNote = `Gemini failed: ${error instanceof Error ? error.message : "unknown error"}`;
+      if (attempt < MAX_GEMINI_ATTEMPTS - 1) continue;
+    }
   }
+
+  return {
+    keep: new Set<number>(),
+    applied: false,
+    note: lastNote || geminiErrorNote(429, ""),
+  };
 }
 
 export async function filterSearchResultsWithGemini(
