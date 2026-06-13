@@ -538,14 +538,27 @@ export function scoreCompetition(
   const profileScore = profileWeight ? profileSum / profileWeight : 0.5;
 
   const source = getCompetitionField(competition, ["source"]) || "manual";
-  const supabaseBonus = source !== "web" ? 0.15 : 0.05;
+  const supabaseBonus = source === "manual" ? 0.15 : 0;
   const modePenalty = mode === "strict" ? 0 : mode === "relaxed" ? -0.05 : -0.12;
+  let varietyPenalty = 0;
+
+  if (source === "web" && inputs.location.trim()) {
+    const name = getCompetitionField(competition, ["name", "title"]);
+    const details = getCompetitionField(competition, ["details", "description"]);
+    const link = getCompetitionField(competition, ["link", "url"]);
+    const inferredLocation = inferCompetitionLocation(name, details, link);
+    const normalized = { ...competition, location: inferredLocation };
+    if (!locationMatchesUser(normalized, inputs.location, inputs.format)) {
+      varietyPenalty = mode === "strict" ? 0.25 : 0.12;
+    }
+  }
 
   const score =
     topicScore * 0.45 +
     profileScore * 0.3 +
     formatScore * 0.15 +
-    supabaseBonus +
+    supabaseBonus -
+    varietyPenalty +
     modePenalty +
     (topicScore > 0 ? 0.1 : 0);
 
@@ -601,6 +614,73 @@ export function rankCompetitions(
 
   scored.sort((a, b) => b.score - a.score);
   return scored;
+}
+
+export function buildProfileSeed(inputs: FormInputs): string {
+  return [
+    inputs.age,
+    inputs.grade,
+    inputs.location,
+    inputs.format,
+    inputs.selectedTopics.join("|"),
+    inputs.otherText,
+  ].join("::");
+}
+
+function seededUnit(seed: string, id: string): number {
+  let hash = 0;
+  const value = `${seed}::${id}`;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (hash * 31 + value.charCodeAt(i)) >>> 0;
+  }
+  return (hash % 1000) / 1000;
+}
+
+export function sortScoredWithProfileVariety(
+  scored: ScoredCompetition[],
+  profileSeed: string,
+): ScoredCompetition[] {
+  return [...scored].sort((a, b) => {
+    if (Math.abs(b.score - a.score) > 0.01) return b.score - a.score;
+    return seededUnit(profileSeed, getCompetitionId(b.competition)) -
+      seededUnit(profileSeed, getCompetitionId(a.competition));
+  });
+}
+
+export function inferCompetitionLocation(
+  title: string,
+  snippet: string,
+  url: string,
+  userLocation = "",
+): string {
+  const text = `${title} ${snippet} ${url}`.toLowerCase();
+
+  for (const [name, abbrev] of Object.entries(US_STATE_ABBREVS)) {
+    if (new RegExp(`\\b${name}\\b`).test(text) || new RegExp(`\\b${abbrev}\\b`).test(text)) {
+      return name.charAt(0).toUpperCase() + name.slice(1);
+    }
+  }
+
+  if (NATIONAL_LOCATION_SIGNALS.some((signal) => text.includes(signal))) {
+    return "National";
+  }
+
+  if (/online|virtual|remote/.test(text)) return "Online";
+
+  return userLocation.trim() || "National";
+}
+
+export function refreshWebRowMetadata(comp: Record<string, unknown>): Record<string, unknown> {
+  if (String(comp.source ?? "manual") !== "web") return comp;
+
+  const name = getCompetitionField(comp, ["name", "title"]);
+  const details = getCompetitionField(comp, ["details", "description", "summary"]);
+  const link = getCompetitionField(comp, ["link", "url"]);
+
+  return {
+    ...comp,
+    location: inferCompetitionLocation(name, details, link),
+  };
 }
 
 export function dedupeCompetitionRows(rows: Record<string, unknown>[]): Record<string, unknown>[] {

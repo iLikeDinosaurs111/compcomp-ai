@@ -714,6 +714,38 @@ function isSafeHttpUrl(value) {
   }
 }
 
+function isSafeImageUrl(value) {
+  const text = String(value ?? "").trim();
+  if (text.startsWith("data:image/")) return true;
+  return isSafeHttpUrl(text);
+}
+
+const usedCardImages = new Set();
+
+function generateCompetitionPlaceholder(name, topic, link) {
+  const label = String(name || "Competition").trim();
+  const initial = label.replace(/^[^a-z0-9]+/i, "").charAt(0).toUpperCase() || "?";
+  const topicHues = {
+    Science: 145,
+    Mathematics: 220,
+    "Art & Creative Writing": 310,
+    "History & Humanities": 28,
+    "Law & Government": 250,
+    Finance: 170,
+    Other: 200,
+  };
+  let hash = 0;
+  const seed = `${topic}:${link}`;
+  for (let i = 0; i < seed.length; i += 1) {
+    hash = (hash * 31 + seed.charCodeAt(i)) >>> 0;
+  }
+  const hue = topicHues[topic] ?? hash % 360;
+  const accent = (hue + 36) % 360;
+  const safeLabel = label.length > 28 ? `${label.slice(0, 25)}…` : label;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180" viewBox="0 0 320 180"><defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="hsl(${hue} 55% 28%)"/><stop offset="100%" stop-color="hsl(${accent} 60% 18%)"/></linearGradient></defs><rect width="320" height="180" fill="url(#bg)" rx="16"/><circle cx="56" cy="90" r="34" fill="rgba(255,255,255,0.14)"/><text x="56" y="102" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="34" font-weight="700" fill="#ffffff">${initial}</text><text x="112" y="88" font-family="Inter,Arial,sans-serif" font-size="15" font-weight="700" fill="#ffffff">${safeLabel.replace(/[<>&"']/g, "")}</text><text x="112" y="112" font-family="Inter,Arial,sans-serif" font-size="12" fill="rgba(255,255,255,0.82)">${String(topic || "Competition").replace(/[<>&"']/g, "")}</text></svg>`;
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+}
+
 function getCompetitionImage(competition) {
   const fromField = getCompetitionField(competition, [
     "image_url",
@@ -724,21 +756,43 @@ function getCompetitionImage(competition) {
     "thumbnail_url",
   ]);
 
-  if (isSafeHttpUrl(fromField)) {
-    return fromField;
-  }
-
-  const linkUrl = getCompetitionLink(competition);
-  if (isSafeHttpUrl(linkUrl)) {
-    try {
-      const host = new URL(linkUrl).hostname;
-      return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(host)}&sz=128`;
-    } catch {
-      return "";
+  if (isSafeImageUrl(fromField)) {
+    if (!usedCardImages.has(fromField)) {
+      usedCardImages.add(fromField);
+      return fromField;
     }
   }
 
-  return "";
+  const name = getCompetitionField(competition, ["name", "title"]) || "Competition";
+  const topic = getCompetitionField(competition, ["topic"]) || "Science";
+  const linkUrl = getCompetitionLink(competition);
+  const candidates = [];
+
+  if (isSafeHttpUrl(linkUrl)) {
+    try {
+      const host = new URL(linkUrl).hostname;
+      candidates.push(`https://www.google.com/s2/favicons?domain=${encodeURIComponent(host)}&sz=128`);
+    } catch {
+      // ignore
+    }
+  }
+
+  candidates.push(generateCompetitionPlaceholder(name, topic, linkUrl || name));
+
+  for (const candidate of candidates) {
+    if (!usedCardImages.has(candidate)) {
+      usedCardImages.add(candidate);
+      return candidate;
+    }
+  }
+
+  const uniquePlaceholder = generateCompetitionPlaceholder(
+    `${name}-${usedCardImages.size}`,
+    topic,
+    `${linkUrl || name}#${usedCardImages.size}`,
+  );
+  usedCardImages.add(uniquePlaceholder);
+  return uniquePlaceholder;
 }
 
 function getCompetitionLink(competition) {
@@ -755,7 +809,7 @@ function getCompetitionLink(competition) {
 function renderCompetitionImage(competition, name) {
   const imageUrl = getCompetitionImage(competition);
 
-  if (!isSafeHttpUrl(imageUrl)) {
+  if (!isSafeImageUrl(imageUrl)) {
     return "";
   }
 
@@ -889,6 +943,7 @@ function renderCompetitionCard(competition) {
 
 function renderCompetitions(competitions, topics = [], options = {}) {
   competitionsGrid.replaceChildren();
+  usedCardImages.clear();
   const capped = competitions.slice(0, DiscoveryMatching.MAX_RESULTS);
 
   if (!options.hasExactMatches) {
