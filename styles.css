@@ -64,13 +64,20 @@ body {
 }
 
 .hero__logo {
-  font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji",
-    sans-serif;
-  font-size: 4.5rem;
-  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex-shrink: 0;
-  display: inline-block;
+  line-height: 0;
+}
+
+.hero__logo-icon {
+  width: clamp(3.5rem, 10vw, 4.5rem);
+  height: clamp(3.5rem, 10vw, 4.5rem);
+  display: block;
+  transform-origin: center center;
   animation: hero-compass-spin 12s linear infinite;
+  will-change: transform;
 }
 
 @keyframes hero-compass-spin {
@@ -84,7 +91,7 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .hero__logo {
+  .hero__logo-icon {
     animation: none;
   }
 }
@@ -152,8 +159,9 @@ body {
     gap: 1.25rem;
   }
 
-  .hero__logo {
-    font-size: 3.5rem;
+  .hero__logo-icon {
+    width: 3.5rem;
+    height: 3.5rem;
   }
 
   .hero__title {
