@@ -45,6 +45,8 @@ const otherTopicCheckbox = document.getElementById("topic-other");
 const otherTopicField = document.getElementById("other-topic-field");
 const otherTopicInput = document.getElementById("other-topic-input");
 const searchQueryInput = document.getElementById("search-query-input");
+const ageInput = document.getElementById("age-input");
+const gradeInput = document.getElementById("grade-input");
 const resultsDisclaimer = document.getElementById("results-disclaimer");
 
 let supabaseClient = null;
@@ -254,6 +256,47 @@ async function discoverCompetitions(inputs) {
   }
 }
 
+function sanitizeAgeInput(value) {
+  const trimmed = String(value ?? "").trim();
+  if (!trimmed || /-/.test(trimmed)) return "";
+  const n = parseInt(trimmed, 10);
+  if (!Number.isFinite(n) || n < 1 || n > 25) return "";
+  return String(n);
+}
+
+function sanitizeGradeInput(value) {
+  const trimmed = String(value ?? "").trim();
+  if (!trimmed || /-/.test(trimmed)) return "";
+  const n = parseInt(trimmed, 10);
+  if (!Number.isFinite(n) || n < 1 || n > 12) return "";
+  return String(n);
+}
+
+function attachNonNegativeNumericInput(input, { max } = {}) {
+  if (!input) return;
+
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "-" || event.key === "+" || event.key === "e" || event.key === "E") {
+      event.preventDefault();
+    }
+  });
+
+  input.addEventListener("input", () => {
+    if (input.value === "") return;
+    const n = Number(input.value);
+    if (!Number.isFinite(n) || n < 1) {
+      input.value = "";
+      return;
+    }
+    if (max && n > max) {
+      input.value = String(max);
+    }
+  });
+}
+
+attachNonNegativeNumericInput(ageInput, { max: 25 });
+attachNonNegativeNumericInput(gradeInput, { max: 12 });
+
 function getFormInputs() {
   const data = new FormData(form);
   const searchQuery = data.get("search-query")?.trim() || "";
@@ -261,8 +304,8 @@ function getFormInputs() {
   const otherText = [searchQuery, otherTopic].filter(Boolean).join(" ").trim();
 
   return {
-    age: data.get("age")?.trim() || "",
-    grade: data.get("grade")?.trim() || "",
+    age: sanitizeAgeInput(data.get("age")),
+    grade: sanitizeGradeInput(data.get("grade")),
     location: data.get("location")?.trim() || "",
     format: data.get("format")?.trim() || "",
     selectedTopics: data.getAll("topics"),

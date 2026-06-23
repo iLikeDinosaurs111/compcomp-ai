@@ -30,6 +30,8 @@ import {
   inferTopicFromText,
   resolveCompetitionFormat,
   scoreFormat,
+  sanitizeAgeInput,
+  sanitizeGradeInput,
 } from "../_shared/matching.ts";
 import {
   inferTimeLabel,
@@ -225,8 +227,8 @@ function parseInputs(body: Record<string, unknown>): FormInputs | null {
   }
 
   return {
-    age: String(body.age ?? "").trim(),
-    grade: String(body.grade ?? "").trim(),
+    age: sanitizeAgeInput(String(body.age ?? "")),
+    grade: sanitizeGradeInput(String(body.grade ?? "")),
     location: String(body.location ?? "").trim(),
     format: String(body.format ?? "").trim(),
     selectedTopics,

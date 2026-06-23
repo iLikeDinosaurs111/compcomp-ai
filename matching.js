@@ -312,8 +312,13 @@ const DiscoveryMatching = (() => {
   }
 
   function parseAgeNumber(value) {
-    const match = String(value).match(/\d+/);
-    return match ? parseInt(match[0], 10) : null;
+    const trimmed = String(value).trim();
+    if (!trimmed || /-/.test(trimmed)) return null;
+    const match = trimmed.match(/^\d+/);
+    if (!match) return null;
+    const n = parseInt(match[0], 10);
+    if (!Number.isFinite(n) || n < 1 || n > 25) return null;
+    return n;
   }
 
   function parseAgeRange(text) {
@@ -354,8 +359,13 @@ const DiscoveryMatching = (() => {
   }
 
   function parseGradeNumber(text) {
-    const match = String(text).match(/\d+/);
-    return match ? parseInt(match[0], 10) : null;
+    const trimmed = String(text).trim();
+    if (!trimmed || /-/.test(trimmed)) return null;
+    const match = trimmed.match(/^\d+/);
+    if (!match) return null;
+    const n = parseInt(match[0], 10);
+    if (!Number.isFinite(n) || n < 1 || n > 12) return null;
+    return n;
   }
 
   function parseGradeRange(text) {

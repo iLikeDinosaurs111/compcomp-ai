@@ -459,8 +459,18 @@ export function locationMatchesUser(
 }
 
 function parseAgeNumber(value: string): number | null {
-  const match = String(value).match(/\d+/);
-  return match ? parseInt(match[0], 10) : null;
+  const trimmed = String(value).trim();
+  if (!trimmed || /-/.test(trimmed)) return null;
+  const match = trimmed.match(/^\d+/);
+  if (!match) return null;
+  const n = parseInt(match[0], 10);
+  if (!Number.isFinite(n) || n < 1 || n > 25) return null;
+  return n;
+}
+
+export function sanitizeAgeInput(value: string): string {
+  const n = parseAgeNumber(value);
+  return n === null ? "" : String(n);
 }
 
 function parseAgeRange(text: string): { min: number; max: number } | null {
@@ -531,8 +541,18 @@ function scoreAge(competition: Record<string, unknown>, userAge: string): number
 }
 
 function parseGradeNumber(text: string): number | null {
-  const match = String(text).match(/\d+/);
-  return match ? parseInt(match[0], 10) : null;
+  const trimmed = String(text).trim();
+  if (!trimmed || /-/.test(trimmed)) return null;
+  const match = trimmed.match(/^\d+/);
+  if (!match) return null;
+  const n = parseInt(match[0], 10);
+  if (!Number.isFinite(n) || n < 1 || n > 12) return null;
+  return n;
+}
+
+export function sanitizeGradeInput(value: string): string {
+  const n = parseGradeNumber(value);
+  return n === null ? "" : String(n);
 }
 
 function parseGradeRange(text: string): { min: number; max: number } | null {
