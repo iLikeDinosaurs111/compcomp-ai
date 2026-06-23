@@ -1,6 +1,6 @@
 export const TARGET_RESULTS = 10;
 export const MAX_RESULTS = 10;
-export const MAX_SUGGESTED_RESULTS = 10;
+export const MAX_SUGGESTED_RESULTS = 24;
 /** @deprecated use TARGET_RESULTS */
 export const MIN_RESULTS = TARGET_RESULTS;
 
@@ -469,10 +469,12 @@ function parseAgeRange(text: string): { min: number; max: number } | null {
   if (rangeMatch) return { min: parseInt(rangeMatch[1], 10), max: parseInt(rangeMatch[2], 10) };
   const plusMatch = normalized.match(/(?:ages?\s*)?(\d{1,2})\s*\+/);
   if (plusMatch) return { min: parseInt(plusMatch[1], 10), max: 99 };
-  const single = normalized.match(/\b(\d{1,2})\b/);
-  if (single) {
-    const n = parseInt(single[1], 10);
-    return { min: n, max: n };
+  const gradeRange = normalized.match(/grades?\s*(\d{1,2})\s*(?:to|through|-)\s*(\d{1,2})/);
+  if (gradeRange) return { min: parseInt(gradeRange[1], 10), max: parseInt(gradeRange[2], 10) };
+  const ageContext = normalized.match(/(?:ages?|for students aged?|students aged?)\s*(\d{1,2})\b/);
+  if (ageContext) {
+    const n = parseInt(ageContext[1], 10);
+    if (n >= 5 && n <= 25) return { min: n, max: n };
   }
   return null;
 }
@@ -1113,6 +1115,14 @@ export function selectTopCompetitions(scored: ScoredCompetition[]): Record<strin
   return top;
 }
 
+function isListicleLikeCompetition(competition: Record<string, unknown>): boolean {
+  const combined = `${getCompetitionField(competition, ["name", "title"])} ${getCompetitionField(competition, ["details", "description", "summary"])}`.toLowerCase();
+  return /\b(top|best)\s+\d+\b/.test(combined) ||
+    /\d+\s+(best|top|great)\b/.test(combined) ||
+    /\b(list of|roundup|competitions for)\b/.test(combined) ||
+    /\b\d+\s+[\w\s]{2,}\bcompetitions?\b/.test(combined);
+}
+
 /** Rank related leftovers for the "may not be what you're looking for" section. */
 export function pickSuggestedCompetitions(
   pool: Record<string, unknown>[],
@@ -1127,7 +1137,8 @@ export function pickSuggestedCompetitions(
   const addCandidate = (competition: Record<string, unknown>, baseScore: number) => {
     const id = getCompetitionId(competition);
     if (excludeIds.has(id)) return;
-    if (!passesSuggestedRelevanceGate(competition, inputs, userTopics)) return;
+    const prequalified = competition._isSuggested === true;
+    if (!prequalified && !passesSuggestedRelevanceGate(competition, inputs, userTopics)) return;
 
     const searchBoost = scoreSearchRelevance(competition, inputs) * 0.55;
     const matched = getMatchedTopicsForCompetition(competition, userTopics, inputs.otherText);
@@ -1138,6 +1149,7 @@ export function pickSuggestedCompetitions(
     }
     if (inputs.format && scoreFormat(competition, inputs.format) > 0) score += 0.08;
     if (String(competition.source ?? "manual") === "web") score += 0.1;
+    if (isListicleLikeCompetition(competition)) score += 0.4;
 
     const prev = byId.get(id);
     byId.set(id, {

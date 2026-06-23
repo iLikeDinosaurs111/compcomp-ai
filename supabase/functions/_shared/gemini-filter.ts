@@ -22,9 +22,13 @@ function formatToday(): string {
 function buildFilterPrompt(
   lines: GeminiLineItem[],
   userTopics: string[],
+  searchQuery = "",
 ): string {
   const today = formatToday();
   const topicStr = userTopics.filter((t) => t !== "Other").join(", ") || "any STEM topic";
+  const searchLine = searchQuery.trim()
+    ? `User searched for: "${searchQuery.trim()}". KEEP official pages that match this name (e.g. program site, registration page, Devpost).`
+    : "KEEP up to 10 real student competitions with open or upcoming registration.";
   const numbered = lines
     .map(
       (item) =>
@@ -33,13 +37,14 @@ function buildFilterPrompt(
     .join("\n");
 
   return `Strict filter for high school competitions. Today: ${today}. Topics: ${topicStr}.
+${searchLine}
 
-KEEP index only for ONE named contest with open/upcoming registration (official page).
-REJECT: listicles, "N competitions", forums/Q&A (?), news, threads, closed/past events.
+KEEP: official competition/program pages, registration pages, Devpost events, trusted org sites.
+REJECT: listicles ("top N", "best competitions"), forums/Q&A, news articles, Spotify/books/media, closed/past events.
 
 ${numbered}
 
-JSON only: {"keep":[0,2]} or {"keep":[]}`;
+JSON only: {"keep":[0,1,2]} — include every index that is a real competition page (up to 10). Use {"keep":[]} only if none qualify.`;
 }
 
 const GEMINI_MODEL = Deno.env.get("GEMINI_MODEL") ?? "gemini-2.0-flash-lite";
@@ -59,7 +64,7 @@ async function callGeminiKeepIndices(
           contents: [{ parts: [{ text: prompt }] }],
           generationConfig: {
             temperature: 0,
-            maxOutputTokens: 128,
+            maxOutputTokens: 256,
             responseMimeType: "application/json",
             responseSchema: {
               type: "object",
@@ -125,6 +130,7 @@ export async function filterCompetitionsWithGemini(
   competitions: Record<string, unknown>[],
   apiKey: string,
   userTopics: string[],
+  searchQuery = "",
 ): Promise<GeminiFilterResult<Record<string, unknown>>> {
   if (!competitions.length || !apiKey) {
     return { items: competitions, applied: false, note: "", rateLimited: false };
@@ -140,7 +146,7 @@ export async function filterCompetitionsWithGemini(
   }));
 
   const { keep, applied, note, rateLimited } = await callGeminiKeepIndices(
-    buildFilterPrompt(lines, userTopics),
+    buildFilterPrompt(lines, userTopics, searchQuery),
     apiKey,
     batch.length,
   );
@@ -151,6 +157,10 @@ export async function filterCompetitionsWithGemini(
 
   if (!applied) {
     return { items: competitions, applied: false, note, rateLimited: false };
+  }
+
+  if (keep.size === 0) {
+    return { items: competitions, applied: true, note: "Gemini rejected all — kept rule-filtered results.", rateLimited: false };
   }
 
   return {

@@ -65,6 +65,50 @@ const SKIP_DOMAINS = [
   "varsitytutors.com", "chegg.com", "coursehero.com", "studystack.com",
   "sparknotes.com", "cliffsnotes.com", "khanacademy.org", "coursera.org",
   "careervillage.org", "careervillage.com",
+  "spotify.com", "open.spotify.com", "goodreads.com", "imdb.com",
+  "wattpad.com", "archive.org", "letterboxd.com", "rottentomatoes.com",
+  "genius.com", "lyrics.com", "allmusic.com", "discogs.com",
+  "apple.com/music", "music.apple.com", "soundcloud.com", "bandcamp.com",
+  "barnesandnoble.com", "bookshop.org", "worldcat.org",
+];
+
+const TRUSTED_PROGRAM_HOSTS = [
+  "hackclub.com", "nasa.gov", "devpost.com", "firstinspires.org",
+  "scienceolympiad.org", "usaco.org", "mathcounts.org", "technovation.org",
+  "cyberpatriot.org", "mit.edu", "regeneron.com", "studentcompetitions.com",
+];
+
+const NON_COMPETITION_CONTENT_PATTERNS = [
+  /\bplaylist\b/i,
+  /\bgoodreads\b/i,
+  /\bnovel\b/i,
+  /\bby\s+[\w\s]+-\s*goodreads\b/i,
+  /\bbook review\b/i,
+  /\b\d[\d,]*\s+saves\b/i,
+  /\bon spotify\b/i,
+  /\bspotify\s*[-–—]\s*/i,
+  /\bimdb\b/i,
+  /\bwatch online\b/i,
+  /\bstream(ing)?\b/i,
+];
+
+const COMPETITION_INTENT_PATTERNS = [
+  /\bhackathon\b/i,
+  /\bchallenge\b/i,
+  /\bcompetition\b/i,
+  /\bcontest\b/i,
+  /\bprogram\b/i,
+  /\bregister\b/i,
+  /\bregistration\b/i,
+  /\bstudents?\b/i,
+  /\bteens?\b/i,
+  /\bhigh school\b/i,
+  /\bolympiad\b/i,
+  /\bscience fair\b/i,
+  /\bstem event\b/i,
+  /\bapply\b/i,
+  /\beligibility\b/i,
+  /\bprizes?\b/i,
 ];
 
 const BLOCKED_PATH_PATTERNS = [
@@ -127,6 +171,8 @@ const KNOWN_COMPETITION_SIGNALS = [
   /\b(olympiad|contest information|competition information)\b/i,
   /\b(register|registration|apply|eligibility|rules and guidelines)\b/i,
   /\b(usaco|hackathon|robotics|technovation|cyberpatriot|first robotics|programming contest|coding competition)\b/i,
+  /\bstardance\b/i,
+  /\bhack club\b/i,
 ];
 
 const DB_PREFERRED_COUNT = 7;
@@ -135,7 +181,7 @@ const TARGET_WEB_SLOTS = 3;
 const MAX_SERPER_QUERIES = 1;
 const MAX_SERPER_QUERIES_WHEN_EMPTY = 2;
 const MAX_WEB_PERSIST = 12;
-const MAX_SUGGESTED_WEB = 25;
+const MAX_SUGGESTED_WEB = 40;
 const SERPER_RESULTS_PER_QUERY = 8;
 
 interface SearchResult {
@@ -306,26 +352,91 @@ function isListOrDirectoryPage(result: SearchResult): boolean {
   const combined = `${result.title} ${result.snippet}`;
 
   if (/^\d+\s+[\w\s]{2,}\bcompetitions?\b/i.test(title)) return true;
+  if (/^\d+\s+[\w\s]{2,}\b(hackathons?|programs?|contests?)\b/i.test(title)) return true;
   if (/\b\d+\s+[\w\s]+\bcompetitions?\b/i.test(title) && !KNOWN_COMPETITION_SIGNALS.some((p) => p.test(combined))) {
     return true;
   }
+  if (/\b(top|best)\s+\d+\b/i.test(title)) return true;
   if (/\bcompetitions for\b/i.test(title)) return true;
-  if (/\blist of\b/i.test(combined) && /\bcompetitions?\b/i.test(combined)) return true;
+  if (/\blist of\b/i.test(combined) && /\b(competitions?|hackathons?|programs?)\b/i.test(combined)) return true;
   if (/\btypical dates\b/i.test(combined) && /\bwhat it'?s for\b/i.test(combined)) return true;
   if (/\bcompetition\b.*\btypical dates\b/i.test(combined)) return true;
 
   return false;
 }
 
-function isHardRejectedResult(result: SearchResult): boolean {
-  if (isQuestionOrForumPage(result)) return true;
-  if (isListOrDirectoryPage(result)) return true;
-  if (isResultsPageResult(result)) return true;
+function isTrustedProgramHost(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return TRUSTED_PROGRAM_HOSTS.some((token) => host.includes(token));
+  } catch {
+    return false;
+  }
+}
 
-  const combined = `${result.title} ${result.snippet}`.toLowerCase();
-  if (LISTICLE_TITLE_PATTERNS.some((pattern) => pattern.test(combined))) {
+function isMediaOrBookPage(result: SearchResult): boolean {
+  const combined = `${result.title} ${result.snippet} ${result.url}`;
+  if (NON_COMPETITION_CONTENT_PATTERNS.some((pattern) => pattern.test(combined))) {
     return true;
   }
+  try {
+    const host = new URL(result.url).hostname.toLowerCase();
+    if (
+      host.includes("spotify") ||
+      host.includes("goodreads") ||
+      host.includes("imdb") ||
+      host.includes("wattpad") ||
+      host.includes("letterboxd")
+    ) {
+      return true;
+    }
+  } catch {
+    return true;
+  }
+  return false;
+}
+
+function hasCompetitionIntent(text: string, url: string): boolean {
+  if (isTrustedProgramHost(url)) return true;
+  const combined = `${text} ${url}`;
+  if (isMediaOrBookPage({ title: text, url, snippet: "" })) return false;
+  if (NON_COMPETITION_CONTENT_PATTERNS.some((pattern) => pattern.test(combined))) return false;
+  return COMPETITION_INTENT_PATTERNS.some((pattern) => pattern.test(combined)) ||
+    looksLikeCompetition(combined.toLowerCase()) ||
+    KNOWN_COMPETITION_SIGNALS.some((pattern) => pattern.test(combined));
+}
+
+function isListicleCompetition(comp: Record<string, unknown>): boolean {
+  const sr = competitionRecordToSearchResult(comp);
+  if (isListOrDirectoryPage(sr)) return true;
+  const combined = `${comp.name ?? ""} ${comp.details ?? ""}`;
+  return LISTICLE_TITLE_PATTERNS.some((pattern) => pattern.test(combined));
+}
+
+function passesPrimaryQualityGate(comp: Record<string, unknown>): boolean {
+  const sr = competitionRecordToSearchResult(comp);
+  if (isMediaOrBookPage(sr)) return false;
+  if (isListicleCompetition(comp)) return false;
+  if (isCompetitionResultsPage(comp)) return false;
+  if (isRejectedResult(sr) && !isTrustedProgramHost(sr.url)) return false;
+
+  const link = String(comp.link ?? comp.url ?? "");
+  const combined = `${comp.name ?? ""} ${comp.details ?? ""}`;
+  if (String(comp.source ?? "manual") === "web" && !hasCompetitionIntent(combined, link)) {
+    return false;
+  }
+  return true;
+}
+
+function isSuggestedOnlyResult(result: SearchResult): boolean {
+  return isListOrDirectoryPage(result) ||
+    LISTICLE_TITLE_PATTERNS.some((pattern) => pattern.test(`${result.title} ${result.snippet}`));
+}
+
+function isHardRejectedResult(result: SearchResult): boolean {
+  if (isQuestionOrForumPage(result)) return true;
+  if (isMediaOrBookPage(result)) return true;
+  if (isResultsPageResult(result)) return true;
 
   try {
     const parsed = new URL(result.url);
@@ -349,10 +460,6 @@ function isRejectedResult(result: SearchResult): boolean {
   if (isResultsPageResult(result)) return true;
   if (hasOnlyPastYears(combined)) return true;
   if (isClosedScheduleText(combined)) return true;
-
-  if (LISTICLE_TITLE_PATTERNS.some((pattern) => pattern.test(combined))) {
-    return true;
-  }
 
   if (NEWS_AND_JUNK_PATTERNS.some((pattern) => pattern.test(combined))) {
     return true;
@@ -418,7 +525,8 @@ function passesStrictCompetitionGate(result: SearchResult): boolean {
       host.includes("cyberpatriot") ||
       host.includes("mathcounts") ||
       host.includes("sciencebowl") ||
-      host.includes("devpost")
+      host.includes("devpost") ||
+      host.includes("hackclub")
     ) {
       return true;
     }
@@ -532,12 +640,30 @@ function scoreSearchResult(result: SearchResult, otherText = ""): number {
 
   if (searchMatch) {
     if (isHardRejectedResult(result)) return -100;
+    if (!hasCompetitionIntent(`${result.title} ${result.snippet}`, result.url) &&
+      !isTrustedProgramHost(result.url)) {
+      return -80;
+    }
   } else if (isRejectedResult(result)) {
     return -100;
   }
 
   let score = 0;
   if (searchMatch) score += 50;
+
+  if (isTrustedProgramHost(result.url)) score += 30;
+  try {
+    const host = new URL(result.url).hostname.toLowerCase();
+    if (host.includes("nasa.gov")) score += 25;
+    if (host.includes("hackclub.com")) score += 25;
+    if (host.includes("devpost.com")) score += 15;
+    if (host.endsWith(".gov")) score += 12;
+    if (host.endsWith(".edu")) score += 8;
+  } catch {
+    /* ignore */
+  }
+
+  if (isSuggestedOnlyResult(result)) score -= 40;
 
   if (!isOfficialCompetitionResult(result)) {
     if (score < 40) return -50;
@@ -767,9 +893,14 @@ function isRejectedCompetitionRecord(
 
   if (matchesSearch) {
     if (isCompetitionResultsPage(comp)) return true;
+    if (isMediaOrBookPage(competitionRecordToSearchResult(comp))) return true;
+    if (isListicleCompetition(comp)) return true;
     if (isRejectedResult(competitionRecordToSearchResult(comp))) return true;
     const scheduleText = `${comp.name ?? ""} ${comp.details ?? ""} ${comp.time ?? ""}`;
     if (isClosedScheduleText(scheduleText)) return true;
+    const link = String(comp.link ?? comp.url ?? "");
+    const combined = `${comp.name ?? ""} ${comp.details ?? ""}`;
+    if (!hasCompetitionIntent(combined, link) && !isTrustedProgramHost(link)) return true;
     return false;
   }
 
@@ -817,9 +948,12 @@ async function discoverFromWeb(
     ? "Science Olympiad ISEF science fair registration high school official site:.org"
     : buildSearchQuery(inputs, userTopics, true));
   const fallbackQuery = searchPhrase
-    ? `${searchPhrase} registration official site`
+    ? `${searchPhrase} hackathon challenge teens students register`
     : `${topicLabel} student competition registration official site:.org`.trim();
-  const queryPlan = [primaryQuery, fallbackQuery].filter(Boolean);
+  const officialQuery = searchPhrase
+    ? `${searchPhrase} site:hackclub.com OR site:nasa.gov OR site:devpost.com`
+    : "";
+  const queryPlan = [primaryQuery, fallbackQuery, officialQuery].filter(Boolean);
   const errors: string[] = [];
 
   const allSearchResults: SearchResult[] = [];
@@ -887,6 +1021,21 @@ async function discoverFromWeb(
       competition = buildNamedSearchFallbackResult(result, inputs, imageUrl);
     }
     if (!competition) continue;
+    if (!passesPrimaryQualityGate(competition)) {
+      const routeToSuggested = isSuggestedOnlyResult(result) ||
+        isListOrDirectoryPage(result) ||
+        (Boolean(searchPhrase) && matchesSearch);
+      if (routeToSuggested && suggestedWeb.length < MAX_SUGGESTED_WEB) {
+        suggestedWeb.push({
+          ...competition,
+          image: imageUrl || faviconForUrl(result.url),
+          _fromDatabase: false,
+          _isSuggested: true,
+          _isNewWeb: false,
+        });
+      }
+      continue;
+    }
 
     const isNewLink = !existingAtStart.has(normalizedUrl);
     importedLinks.add(normalizedUrl);
@@ -962,7 +1111,9 @@ async function discoverFromWeb(
       competition = buildNamedSearchFallbackResult(result, inputs, imageUrl);
     }
     if (!competition) continue;
-    if (!passesSuggestedRelevanceGate(competition, inputs, userTopics)) continue;
+    if (!matchesSuggestedSearch && !passesSuggestedRelevanceGate(competition, inputs, userTopics)) {
+      continue;
+    }
 
     suggestedWeb.push({
       ...competition,
@@ -985,6 +1136,25 @@ async function discoverFromWeb(
         ? result.image
         : faviconForUrl(result.url);
       const competition = buildNamedSearchFallbackResult(result, inputs, imageUrl);
+
+      if (!passesPrimaryQualityGate(competition)) {
+        if (suggestedWeb.length < MAX_SUGGESTED_WEB) {
+          suggestedWeb.push({
+            ...competition,
+            image: imageUrl || faviconForUrl(result.url),
+            _fromDatabase: false,
+            _isSuggested: true,
+            _isNewWeb: false,
+          });
+        }
+        continue;
+      }
+
+      if (!hasCompetitionIntent(`${result.title} ${result.snippet}`, result.url) &&
+        !isTrustedProgramHost(result.url)) {
+        continue;
+      }
+
       importedLinks.add(normalizedUrl);
 
       const dbRow = toCompetitionDbRow({
@@ -1011,6 +1181,44 @@ async function discoverFromWeb(
     }
   }
 
+  if (searchPhrase && suggestedWeb.length < MAX_SUGGESTED_WEB) {
+    const suggestedUrls = new Set(
+      suggestedWeb.map((c) => normalizeCompetitionLink(String(c.link ?? ""))).filter(Boolean),
+    );
+
+    for (const result of allSearchResults) {
+      if (suggestedWeb.length >= MAX_SUGGESTED_WEB) break;
+      if (!searchResultMatchesQuery(result, searchPhrase) || isHardRejectedResult(result)) continue;
+
+      const normalizedUrl = normalizeCompetitionLink(result.url);
+      if (!normalizedUrl || primaryUrls.has(normalizedUrl) || importedLinks.has(normalizedUrl) ||
+        suggestedUrls.has(normalizedUrl)) {
+        continue;
+      }
+
+      const imageUrl = result.image && isSafeImageUrl(result.image, result.url)
+        ? result.image
+        : faviconForUrl(result.url);
+      const competition = buildCompetitionFromSearchResult(
+        result,
+        inputs,
+        userTopics,
+        imageUrl,
+        false,
+      ) ?? buildNamedSearchFallbackResult(result, inputs, imageUrl);
+      if (!competition) continue;
+
+      suggestedUrls.add(normalizedUrl);
+      suggestedWeb.push({
+        ...competition,
+        image: imageUrl || faviconForUrl(result.url),
+        _fromDatabase: false,
+        _isSuggested: true,
+        _isNewWeb: false,
+      });
+    }
+  }
+
   return {
     imported: displayResults,
     suggestedWeb,
@@ -1021,6 +1229,39 @@ async function discoverFromWeb(
     geminiNote,
     errors,
   };
+}
+
+function isSuggestedPoolRecord(comp: Record<string, unknown>): boolean {
+  const sr = competitionRecordToSearchResult(comp);
+  if (isCompetitionResultsPage(comp)) return false;
+  if (isMediaOrBookPage(sr)) return false;
+  if (isQuestionOrForumPage(sr)) return false;
+  return true;
+}
+
+function fillSuggestedCompetitions(
+  picked: Record<string, unknown>[],
+  pool: Record<string, unknown>[],
+  primaryIds: Set<string>,
+  limit: number,
+  imageAllocator: ImageAllocator,
+): Record<string, unknown>[] {
+  const seen = new Set(picked.map((comp) => getCompetitionId(comp)));
+  const filled = [...picked];
+
+  for (const comp of pool) {
+    if (filled.length >= limit) break;
+    const id = getCompetitionId(comp);
+    if (primaryIds.has(id) || seen.has(id)) continue;
+    if (!isSuggestedPoolRecord(comp)) continue;
+    seen.add(id);
+    filled.push({
+      ...assignCompetitionImage(comp, imageAllocator),
+      _isSuggested: true,
+    });
+  }
+
+  return filled.slice(0, limit);
 }
 
 function pickWithProfileVariety(
@@ -1057,7 +1298,10 @@ function passesWebCandidateGate(result: SearchResult, userTopics: string[], othe
   if (otherText) {
     const stub = { name: result.title, details: result.snippet, link: result.url, topic: "" };
     if (competitionMatchesOtherText(stub, otherText)) {
-      return !isHardRejectedResult(result);
+      if (isHardRejectedResult(result)) return false;
+      if (isSuggestedOnlyResult(result)) return true;
+      return hasCompetitionIntent(`${result.title} ${result.snippet}`, result.url) ||
+        isTrustedProgramHost(result.url);
     }
   }
   if (isRejectedResult(result)) return false;
@@ -1150,7 +1394,10 @@ function buildNamedSearchPrimary(
   let competitions = dedupeCompetitionResults(
     webResults
       .map((comp) => assignCompetitionImage(comp, imageAllocator))
-      .filter((comp) => !isRejectedCompetitionRecord(comp, userTopics, matchPhrase)),
+      .filter((comp) =>
+        passesPrimaryQualityGate(comp) &&
+        !isRejectedCompetitionRecord(comp, userTopics, matchPhrase),
+      ),
   );
 
   competitions = prioritizeSearchMatches(competitions, searchQuery, imageAllocator);
@@ -1177,13 +1424,30 @@ function buildNamedSearchPrimary(
       if (competitions.length >= TARGET_RESULTS) break;
       const id = getCompetitionId(comp);
       if (seen.has(id)) continue;
+      if (!passesPrimaryQualityGate(comp)) continue;
       if (isRejectedCompetitionRecord(comp, userTopics, matchPhrase)) continue;
       seen.add(id);
       competitions.push(assignCompetitionImage(comp, imageAllocator));
     }
   }
 
-  return prioritizeSearchMatches(competitions, searchQuery, imageAllocator);
+  if (competitions.length < TARGET_RESULTS) {
+    const fill = ensurePrimaryCompetitions(
+      competitions,
+      eligibleDb.filter((comp) => passesPrimaryQualityGate(comp)),
+      inputs,
+      userTopics,
+      imageAllocator,
+    ).filter((comp) =>
+      !isRejectedCompetitionRecord(comp, userTopics, matchPhrase) &&
+      passesPrimaryQualityGate(comp)
+    );
+    competitions = prioritizeSearchMatches(fill, searchQuery, imageAllocator);
+  }
+
+  return prioritizeSearchMatches(competitions, searchQuery, imageAllocator)
+    .filter(passesPrimaryQualityGate)
+    .slice(0, TARGET_RESULTS);
 }
 
 function ensurePrimaryCompetitions(
@@ -1230,7 +1494,9 @@ function ensurePrimaryCompetitions(
     ]).slice(0, TARGET_RESULTS);
   }
 
-  return result.slice(0, TARGET_RESULTS);
+  return result
+    .filter(passesPrimaryQualityGate)
+    .slice(0, TARGET_RESULTS);
 }
 
 Deno.serve(async (req) => {
@@ -1335,28 +1601,41 @@ Deno.serve(async (req) => {
     let competitions = isNamedSearch
       ? buildNamedSearchPrimary(webResults, eligibleDb, inputs, userTopics, imageAllocator)
       : ensurePrimaryCompetitions(
-        webResults.map((comp) => assignCompetitionImage(comp, imageAllocator)),
-        eligibleDb,
+        webResults
+          .map((comp) => assignCompetitionImage(comp, imageAllocator))
+          .filter(passesPrimaryQualityGate),
+        eligibleDb.filter(passesPrimaryQualityGate),
         inputs,
         userTopics,
         imageAllocator,
-      ).filter((comp) => !isRejectedCompetitionRecord(comp, userTopics, matchPhrase));
+      ).filter((comp) =>
+        !isRejectedCompetitionRecord(comp, userTopics, matchPhrase) &&
+        passesPrimaryQualityGate(comp),
+      );
 
     let geminiSkippedReason = "";
 
-    if (geminiKey && competitions.length && !isNamedSearch) {
+    if (geminiKey && competitions.length) {
       const quota = await checkGeminiQuota(supabase);
 
       if (quota.allowed && await reserveGeminiSlot(supabase)) {
-        const finalGemini = await filterCompetitionsWithGemini(competitions, geminiKey, userTopics);
+        const finalGemini = await filterCompetitionsWithGemini(
+          competitions,
+          geminiKey,
+          userTopics,
+          searchQuery,
+        );
 
         if (finalGemini.rateLimited) {
           await recordGemini429(supabase);
           geminiSkippedReason = "cooldown";
         } else if (finalGemini.applied) {
-          competitions = finalGemini.items.filter(
-            (comp) => !isRejectedCompetitionRecord(comp, userTopics, matchPhrase),
+          const filtered = finalGemini.items.filter(
+            (comp) =>
+              !isRejectedCompetitionRecord(comp, userTopics, matchPhrase) &&
+              passesPrimaryQualityGate(comp),
           );
+          competitions = filtered.length ? filtered : competitions.filter(passesPrimaryQualityGate);
           geminiFilterUsed = true;
         } else if (finalGemini.note) {
           geminiNote = finalGemini.note;
@@ -1366,17 +1645,24 @@ Deno.serve(async (req) => {
       }
     }
 
-    if (isNamedSearch) {
-      competitions = buildNamedSearchPrimary(webResults, eligibleDb, inputs, userTopics, imageAllocator);
-    } else {
-      competitions = ensurePrimaryCompetitions(
-        competitions,
-        eligibleDb,
-        inputs,
-        userTopics,
-        imageAllocator,
-      ).filter((comp) => !isRejectedCompetitionRecord(comp, userTopics, matchPhrase));
+    if (competitions.length < TARGET_RESULTS) {
+      competitions = isNamedSearch
+        ? buildNamedSearchPrimary(webResults, eligibleDb, inputs, userTopics, imageAllocator)
+        : ensurePrimaryCompetitions(
+          competitions,
+          eligibleDb.filter((comp) => passesPrimaryQualityGate(comp)),
+          inputs,
+          userTopics,
+          imageAllocator,
+        ).filter((comp) =>
+          !isRejectedCompetitionRecord(comp, userTopics, matchPhrase) &&
+          passesPrimaryQualityGate(comp),
+        );
     }
+
+    competitions = dedupeCompetitionResults(competitions)
+      .filter(passesPrimaryQualityGate)
+      .slice(0, TARGET_RESULTS);
 
     const primaryIds = new Set(competitions.map((comp) => getCompetitionId(comp)));
     const leftoverWeb = dedupeCompetitionResults([
@@ -1386,12 +1672,14 @@ Deno.serve(async (req) => {
 
     const suggestedPool = dedupeCompetitionResults([
       ...leftoverWeb,
+      ...webSuggested.filter((comp) => !primaryIds.has(getCompetitionId(comp))),
+      ...eligibleDb.filter((comp) => !primaryIds.has(getCompetitionId(comp))),
       ...allCompetitions
         .map((c) => String(c.source ?? "manual") === "web" ? refreshWebRowMetadata(c) : c)
         .map((c) => refreshCompetitionSchedule(c))
         .filter((c) => !primaryIds.has(getCompetitionId(c)))
         .filter((c) => !isCompetitionResultsPage(c) && isCompetitionUpcoming(c))
-        .filter((c) => !isRejectedResult(competitionRecordToSearchResult(c))),
+        .filter((c) => isSuggestedPoolRecord(c)),
     ]);
 
     let suggestedCompetitions = pickSuggestedCompetitions(
@@ -1400,6 +1688,16 @@ Deno.serve(async (req) => {
       primaryIds,
       MAX_SUGGESTED_RESULTS,
     );
+
+    if (suggestedCompetitions.length < MAX_SUGGESTED_RESULTS) {
+      suggestedCompetitions = fillSuggestedCompetitions(
+        suggestedCompetitions,
+        suggestedPool,
+        primaryIds,
+        MAX_SUGGESTED_RESULTS,
+        imageAllocator,
+      );
+    }
 
     suggestedCompetitions = suggestedCompetitions
       .filter((comp) => !primaryIds.has(getCompetitionId(comp)))
