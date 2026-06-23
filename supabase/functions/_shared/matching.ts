@@ -593,18 +593,71 @@ function scoreLocation(competition: Record<string, unknown>, userLocation: strin
   return 0;
 }
 
+export function inferFormatFromText(text: string): string {
+  const normalized = normalizeInterestText(text);
+  if (/\bonline\b|\bvirtual\b|\bremote\b|\bwebinar\b|\bzoom\b/.test(normalized)) {
+    return "online";
+  }
+  if (/\bin person\b|\bin-person\b|\blocal (school|schools|chapter|test center|testing center)\b|\bonsite\b/.test(normalized)) {
+    return "in-person";
+  }
+  return "both";
+}
+
+/** Actual delivery format from page text/URL — not the user's form preference. */
+export function resolveCompetitionFormat(competition: Record<string, unknown>): string {
+  const name = getCompetitionField(competition, ["name", "title"]);
+  const details = getCompetitionField(competition, ["details", "description", "summary", "about"]);
+  const location = getCompetitionField(competition, ["location", "city", "region", "state"]);
+  const link = getCompetitionField(competition, ["link", "url"]);
+  const stored = getCompetitionField(competition, ["format", "delivery", "mode", "type"]).toLowerCase();
+  const titleLower = name.toLowerCase();
+
+  if (/devpost\.com/i.test(link)) return "online";
+  if (/\bonline\b/.test(titleLower) || /^virtual\b/.test(titleLower)) return "online";
+
+  const fromText = inferFormatFromText(`${name} ${details} ${location}`);
+  if (fromText === "online") return "online";
+  if (fromText === "in-person") return "in-person";
+
+  if (stored.includes("online") || stored.includes("virtual") || stored.includes("remote")) return "online";
+  if (stored.includes("in-person") || stored.includes("in person")) return "in-person";
+  if (stored.includes("both") || stored.includes("hybrid")) return "both";
+
+  return stored || "both";
+}
+
 export function scoreFormat(competition: Record<string, unknown>, format: string): number {
   if (!format) return 1;
-  const competitionFormat = getCompetitionField(competition, ["format", "delivery", "mode", "type"]).toLowerCase();
-  if (!competitionFormat) return 0.7;
-  if (competitionFormat.includes("both") || competitionFormat.includes("hybrid")) return 1;
+  const competitionFormat = resolveCompetitionFormat(competition).toLowerCase();
+  const text = normalizeInterestText(getCompetitionSearchText(competition));
   const normalizedFormat = format.toLowerCase();
+
   if (normalizedFormat === "online") {
-    return competitionFormat.includes("online") || competitionFormat.includes("virtual") || competitionFormat.includes("remote") ? 1 : 0;
+    if (competitionFormat.includes("online") || competitionFormat.includes("virtual") || competitionFormat.includes("remote")) {
+      return 1;
+    }
+    if (competitionFormat === "both" || competitionFormat.includes("hybrid")) {
+      return /\bonline\b|\bvirtual\b|\bremote\b/.test(text) ? 1 : 0.5;
+    }
+    return 0;
   }
+
   if (normalizedFormat === "in-person") {
-    return competitionFormat.includes("in-person") || competitionFormat.includes("in person") || competitionFormat.includes("person") ? 1 : 0;
+    if (competitionFormat.includes("in-person") || competitionFormat.includes("in person")) return 1;
+    if (competitionFormat === "both" || competitionFormat.includes("hybrid")) {
+      if (/\bonline\b|\bvirtual\b|\bremote\b/.test(text) && !/\blocal (school|schools|chapter)\b/.test(text)) {
+        return 0;
+      }
+      if (/\blocal (school|schools|chapter|test center)\b|\bin person\b|\bin-person\b/.test(text)) {
+        return 1;
+      }
+      return 0;
+    }
+    return 0;
   }
+
+  if (competitionFormat === "both" || competitionFormat.includes("hybrid")) return 1;
   return competitionFormat.includes(normalizedFormat) ? 1 : 0;
 }
 
@@ -824,11 +877,7 @@ export function scoreCompetition(
   }
 
   let formatScore = scoreFormat(competition, inputs.format);
-  if (mode === "strict") {
-    if (inputs.format && formatScore === 0) return null;
-  } else if (inputs.format && formatScore === 0) {
-    formatScore = 0.35;
-  }
+  if (inputs.format && formatScore === 0) return null;
 
   let locationAllowed = true;
   if (inputs.location && !locationMatchesUser(competition, inputs.location, inputs.format)) {
@@ -1023,7 +1072,7 @@ export function inferCompetitionLocation(
 
   if (/online|virtual|remote/.test(text)) return "Online";
 
-  return userLocation.trim() || "National";
+  return "National";
 }
 
 export function refreshWebRowMetadata(comp: Record<string, unknown>): Record<string, unknown> {
@@ -1035,6 +1084,7 @@ export function refreshWebRowMetadata(comp: Record<string, unknown>): Record<str
 
   return {
     ...comp,
+    format: resolveCompetitionFormat(comp),
     location: String(comp.location ?? "").trim() || inferCompetitionLocation(name, details, link),
     age: String(comp.age ?? "").trim() || inferAgeLabel(name, details),
     grade: String(comp.grade ?? "").trim() || inferGradeLabel(name, details),
@@ -1234,11 +1284,4 @@ export function inferBestTopicForUser(text: string, userTopics: string[]): strin
   if (inferred && userTopics.includes(inferred)) return inferred;
   if (userTopics.includes("Finance") && inferred === "Mathematics") return "Finance";
   return null;
-}
-
-export function inferFormatFromText(text: string): string {
-  const normalized = normalizeInterestText(text);
-  if (normalized.includes("online") || normalized.includes("virtual") || normalized.includes("remote")) return "online";
-  if (normalized.includes("in person") || normalized.includes("in-person")) return "in-person";
-  return "both";
 }

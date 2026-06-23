@@ -545,42 +545,73 @@ function competitionMatchesOtherText(competition, otherText) {
     .some((word) => textMatchesKeyword(competitionText, word));
 }
 
+function resolveCompetitionFormat(competition) {
+  const name = getCompetitionField(competition, ["name", "title", "competition_name"]);
+  const details = getCompetitionField(competition, ["description", "details", "summary", "about"]);
+  const location = getCompetitionField(competition, ["location", "city", "region", "state"]);
+  const link = getCompetitionField(competition, ["link", "url"]);
+  const stored = getCompetitionField(competition, ["format", "delivery", "mode", "type"]).toLowerCase();
+  const titleLower = name.toLowerCase();
+
+  if (/devpost\.com/i.test(link)) {
+    return "online";
+  }
+  if (/\bonline\b/.test(titleLower)) {
+    return "online";
+  }
+
+  const inferred = inferFormatFromText(`${name} ${details} ${location}`);
+  if (inferred === "online" || inferred === "in-person") {
+    return inferred;
+  }
+
+  if (stored.includes("online") || stored.includes("virtual") || stored.includes("remote")) {
+    return "online";
+  }
+  if (stored.includes("in-person") || stored.includes("in person")) {
+    return "in-person";
+  }
+  if (stored.includes("both") || stored.includes("hybrid")) {
+    return "both";
+  }
+
+  return stored || "both";
+}
+
 function competitionMatchesFormat(competition, format) {
   if (!format) {
     return true;
   }
 
-  const competitionFormat = getCompetitionField(competition, [
-    "format",
-    "delivery",
-    "mode",
-    "type",
-  ]).toLowerCase();
-
-  if (!competitionFormat) {
-    return true;
-  }
-
-  if (competitionFormat.includes("both") || competitionFormat.includes("hybrid")) {
-    return true;
-  }
-
+  const competitionFormat = resolveCompetitionFormat(competition).toLowerCase();
+  const text = `${getCompetitionField(competition, ["name", "title", "competition_name"])} ${getCompetitionField(competition, ["description", "details", "summary", "about"])}`.toLowerCase();
   const normalizedFormat = format.toLowerCase();
 
   if (normalizedFormat === "online") {
-    return (
-      competitionFormat.includes("online") ||
-      competitionFormat.includes("virtual") ||
-      competitionFormat.includes("remote")
-    );
+    if (competitionFormat.includes("online") || competitionFormat.includes("virtual") || competitionFormat.includes("remote")) {
+      return true;
+    }
+    if (competitionFormat === "both" || competitionFormat.includes("hybrid")) {
+      return /\bonline\b|\bvirtual\b|\bremote\b/.test(text);
+    }
+    return false;
   }
 
   if (normalizedFormat === "in-person") {
-    return (
-      competitionFormat.includes("in-person") ||
-      competitionFormat.includes("in person") ||
-      competitionFormat.includes("person")
-    );
+    if (competitionFormat.includes("in-person") || competitionFormat.includes("in person")) {
+      return true;
+    }
+    if (competitionFormat === "both" || competitionFormat.includes("hybrid")) {
+      if (/\bonline\b|\bvirtual\b|\bremote\b/.test(text) && !/\blocal (school|schools|chapter)\b/.test(text)) {
+        return false;
+      }
+      return /\blocal (school|schools|chapter|test center)\b|\bin person\b|\bin-person\b/.test(text);
+    }
+    return false;
+  }
+
+  if (competitionFormat === "both" || competitionFormat.includes("hybrid")) {
+    return true;
   }
 
   return competitionFormat.includes(normalizedFormat);
@@ -1029,6 +1060,21 @@ function formatGradeLabel(grade) {
   return `Grades ${value}`;
 }
 
+function inferFormatFromText(text) {
+  const normalized = String(text).toLowerCase();
+  if (/\bonline\b|\bvirtual\b|\bremote\b|\bwebinar\b|\bzoom\b/.test(normalized)) {
+    return "online";
+  }
+  if (/\bin person\b|\bin-person\b|\blocal (school|schools|chapter|test center|testing center)\b|\bonsite\b/.test(normalized)) {
+    return "in-person";
+  }
+  return "both";
+}
+
+function resolveCardFormat(competition) {
+  return formatFormatLabel(resolveCompetitionFormat(competition));
+}
+
 function formatFormatLabel(format) {
   const value = String(format).trim();
   if (!value) {
@@ -1082,7 +1128,7 @@ function renderCompetitionCard(competition) {
     "grade_level",
     "grade_range",
   ]);
-  const format = getCompetitionField(competition, ["format", "delivery", "mode"]);
+  const format = resolveCardFormat(competition);
   const schedule = getCompetitionField(competition, ["time", "date", "deadline"]);
   const displayTopic = getDisplayTopic(competition);
   const source = getCompetitionField(competition, ["source"]);

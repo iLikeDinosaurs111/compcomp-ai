@@ -28,6 +28,8 @@ import {
   passesSuggestedRelevanceGate,
   competitionMatchesOtherText,
   inferTopicFromText,
+  resolveCompetitionFormat,
+  scoreFormat,
 } from "../_shared/matching.ts";
 import {
   inferTimeLabel,
@@ -111,6 +113,15 @@ const COMPETITION_INTENT_PATTERNS = [
   /\bprizes?\b/i,
 ];
 
+const EDUCATION_SITE_PATTERNS = [
+  /\bmath playground\b/i,
+  /\bpurposeful play\b/i,
+  /\bprep course\b/i,
+  /\btutoring\b/i,
+  /\bworksheet\b/i,
+  /\bcurriculum\b/i,
+];
+
 const BLOCKED_PATH_PATTERNS = [
   "/news/", "/blog/", "/article/", "/jobs/", "/careers/",
   "/posts/", "/stories/", "/guides/", "/list/", "/roundup/",
@@ -125,6 +136,8 @@ const LISTICLE_TITLE_PATTERNS = [
   /\b(top|best)\s+\d+\s+\w+\s+compet/i,
   /\bcompetitions for (high school|students)\b/i,
   /\?\s*-\s*quora\b/i,
+  /\bessential guide\b/i,
+  /\bdon't miss this\b/i,
   /\bsummer programs?\b/i,
   /\bapplying to college\b/i,
   /\b\d+\s+[\w\s]{2,}\bcompetitions?\b/i,
@@ -423,6 +436,10 @@ function passesPrimaryQualityGate(comp: Record<string, unknown>): boolean {
   const link = String(comp.link ?? comp.url ?? "");
   const combined = `${comp.name ?? ""} ${comp.details ?? ""}`;
   if (String(comp.source ?? "manual") === "web" && !hasCompetitionIntent(combined, link)) {
+    return false;
+  }
+  if (EDUCATION_SITE_PATTERNS.some((pattern) => pattern.test(combined)) &&
+    !KNOWN_COMPETITION_SIGNALS.some((pattern) => pattern.test(combined))) {
     return false;
   }
   return true;
@@ -778,8 +795,13 @@ function buildNamedSearchFallbackResult(
     link: result.url,
     image: imageUrl,
     topic,
-    format: inputs.format || inferFormatFromText(combinedText) || "online",
-    location: inferCompetitionLocation(result.title, result.snippet, result.url, inputs.location),
+    format: resolveCompetitionFormat({
+      name: result.title,
+      details: result.snippet,
+      link: result.url,
+      format: inferFormatFromText(combinedText),
+    }),
+    location: inferCompetitionLocation(result.title, result.snippet, result.url),
     grade: inferGradeLabel(combinedText, result.title) || "",
     age: inferAgeLabel(combinedText, result.title, result.snippet),
     source: "web",
@@ -833,7 +855,12 @@ function buildCompetitionFromSearchResult(
     if (matchedTopics.length) topic = matchedTopics[0];
   }
 
-  const format = inputs.format || inferFormatFromText(combinedText) || "online";
+  const format = resolveCompetitionFormat({
+    name: result.title,
+    details: result.snippet,
+    link: result.url,
+    format: inferFormatFromText(combinedText),
+  });
   const time = inferTimeLabel(combinedText);
 
   const competition = {
@@ -843,7 +870,7 @@ function buildCompetitionFromSearchResult(
     image: imageUrl,
     topic,
     format,
-    location: inferCompetitionLocation(result.title, result.snippet, result.url, inputs.location),
+    location: inferCompetitionLocation(result.title, result.snippet, result.url),
     grade: inferGradeLabel(combinedText, result.title) || "",
     age: inferAgeLabel(combinedText, result.title, result.snippet),
     source: "web",
@@ -888,7 +915,10 @@ function isRejectedCompetitionRecord(
   comp: Record<string, unknown>,
   userTopics: string[] = [],
   otherText = "",
+  userFormat = "",
 ): boolean {
+  const formatMismatch = Boolean(userFormat) && scoreFormat(comp, userFormat) === 0;
+
   const matchesSearch = Boolean(otherText) && competitionMatchesOtherText(comp, otherText);
 
   if (matchesSearch) {
@@ -896,6 +926,7 @@ function isRejectedCompetitionRecord(
     if (isMediaOrBookPage(competitionRecordToSearchResult(comp))) return true;
     if (isListicleCompetition(comp)) return true;
     if (isRejectedResult(competitionRecordToSearchResult(comp))) return true;
+    if (formatMismatch) return true;
     const scheduleText = `${comp.name ?? ""} ${comp.details ?? ""} ${comp.time ?? ""}`;
     if (isClosedScheduleText(scheduleText)) return true;
     const link = String(comp.link ?? comp.url ?? "");
@@ -908,6 +939,7 @@ function isRejectedCompetitionRecord(
   if (topicExplicitlyConflictsWithSearch(comp, userTopics)) return true;
   if (isRejectedResult(competitionRecordToSearchResult(comp))) return true;
   if (!isCompetitionUpcoming(comp)) return true;
+  if (formatMismatch) return true;
   if (userTopics.length && !competitionMatchesUserTopics(comp, userTopics, otherText)) return true;
   return false;
 }
@@ -1402,7 +1434,7 @@ function buildNamedSearchPrimary(
       .map((comp) => assignCompetitionImage(comp, imageAllocator))
       .filter((comp) =>
         passesPrimaryQualityGate(comp) &&
-        !isRejectedCompetitionRecord(comp, userTopics, matchPhrase),
+        !isRejectedCompetitionRecord(comp, userTopics, matchPhrase, inputs.format),
       ),
   );
 
@@ -1412,7 +1444,7 @@ function buildNamedSearchPrimary(
     const dbMatches = eligibleDb.filter(
       (comp) =>
         competitionMatchesOtherText(comp, searchQuery) &&
-        !isRejectedCompetitionRecord(comp, userTopics, matchPhrase),
+        !isRejectedCompetitionRecord(comp, userTopics, matchPhrase, inputs.format),
     );
     competitions = ensurePrimaryCompetitions(
       competitions,
@@ -1420,7 +1452,7 @@ function buildNamedSearchPrimary(
       inputs,
       userTopics,
       imageAllocator,
-    ).filter((comp) => !isRejectedCompetitionRecord(comp, userTopics, matchPhrase));
+    ).filter((comp) => !isRejectedCompetitionRecord(comp, userTopics, matchPhrase, inputs.format));
     competitions = prioritizeSearchMatches(competitions, searchQuery, imageAllocator);
   }
 
@@ -1431,7 +1463,7 @@ function buildNamedSearchPrimary(
       const id = getCompetitionId(comp);
       if (seen.has(id)) continue;
       if (!passesPrimaryQualityGate(comp)) continue;
-      if (isRejectedCompetitionRecord(comp, userTopics, matchPhrase)) continue;
+      if (isRejectedCompetitionRecord(comp, userTopics, matchPhrase, inputs.format)) continue;
       seen.add(id);
       competitions.push(assignCompetitionImage(comp, imageAllocator));
     }
@@ -1445,7 +1477,7 @@ function buildNamedSearchPrimary(
       userTopics,
       imageAllocator,
     ).filter((comp) =>
-      !isRejectedCompetitionRecord(comp, userTopics, matchPhrase) &&
+      !isRejectedCompetitionRecord(comp, userTopics, matchPhrase, inputs.format) &&
       passesPrimaryQualityGate(comp)
     );
     competitions = prioritizeSearchMatches(fill, searchQuery, imageAllocator);
@@ -1593,7 +1625,7 @@ Deno.serve(async (req) => {
         webImportTarget,
       );
       webResults = webDiscovery.imported.filter(
-        (comp) => !isRejectedCompetitionRecord(comp, userTopics, matchPhrase),
+        (comp) => !isRejectedCompetitionRecord(comp, userTopics, matchPhrase, inputs.format),
       );
       webSuggested = webDiscovery.suggestedWeb;
       searchHits = webDiscovery.searchHits;
@@ -1615,7 +1647,7 @@ Deno.serve(async (req) => {
         userTopics,
         imageAllocator,
       ).filter((comp) =>
-        !isRejectedCompetitionRecord(comp, userTopics, matchPhrase) &&
+        !isRejectedCompetitionRecord(comp, userTopics, matchPhrase, inputs.format) &&
         passesPrimaryQualityGate(comp),
       );
 
@@ -1638,7 +1670,7 @@ Deno.serve(async (req) => {
         } else if (finalGemini.applied) {
           const filtered = finalGemini.items.filter(
             (comp) =>
-              !isRejectedCompetitionRecord(comp, userTopics, matchPhrase) &&
+              !isRejectedCompetitionRecord(comp, userTopics, matchPhrase, inputs.format) &&
               passesPrimaryQualityGate(comp),
           );
           competitions = filtered.length ? filtered : competitions.filter(passesPrimaryQualityGate);
@@ -1661,7 +1693,7 @@ Deno.serve(async (req) => {
           userTopics,
           imageAllocator,
         ).filter((comp) =>
-          !isRejectedCompetitionRecord(comp, userTopics, matchPhrase) &&
+          !isRejectedCompetitionRecord(comp, userTopics, matchPhrase, inputs.format) &&
           passesPrimaryQualityGate(comp),
         );
     }
